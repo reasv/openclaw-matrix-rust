@@ -20,6 +20,7 @@ pub struct MatrixStateLayout {
     pub crypto_store_dir: String,
     pub media_cache_dir: String,
     pub emoji_catalog_file: String,
+    pub reactions_file: String,
     pub logs_dir: String,
 }
 
@@ -135,6 +136,104 @@ pub struct MatrixSendResult {
     pub room_id: String,
     pub message_id: String,
     pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatrixReactionKeyKind {
+    Unicode,
+    Custom,
+    Text,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReactionInfo {
+    pub raw: String,
+    pub normalized: String,
+    pub display: String,
+    pub kind: MatrixReactionKeyKind,
+    pub shortcode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReactionSummary {
+    pub key: String,
+    pub normalized_key: String,
+    pub display: String,
+    pub kind: MatrixReactionKeyKind,
+    pub shortcode: Option<String>,
+    pub count: u64,
+    pub users: Vec<String>,
+    pub raw_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReactRequest {
+    pub room_id: String,
+    pub message_id: String,
+    pub key: String,
+    pub remove: Option<bool>,
+    pub sender_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReactResult {
+    pub removed: u64,
+    pub reaction: Option<MatrixReactionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixListReactionsRequest {
+    pub room_id: String,
+    pub message_id: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixCustomEmojiRef {
+    pub shortcode: String,
+    pub mxc_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixCustomEmojiRoomStats {
+    pub message_count: u64,
+    pub last_message_ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixCustomEmojiCatalogEntry {
+    pub shortcode: String,
+    pub mxc_url: String,
+    pub first_seen_ts: i64,
+    pub last_seen_ts: i64,
+    pub global_message_count: u64,
+    pub global_last_message_ts: i64,
+    pub rooms: std::collections::BTreeMap<String, MatrixCustomEmojiRoomStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixCustomEmojiUsageRequest {
+    pub emoji: Vec<MatrixCustomEmojiRef>,
+    pub room_id: Option<String>,
+    pub observed_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixListEmojiRequest {
+    pub room_id: Option<String>,
+    pub limit: Option<usize>,
+    pub now_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

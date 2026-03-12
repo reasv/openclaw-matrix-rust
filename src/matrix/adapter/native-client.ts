@@ -2,7 +2,13 @@ import { MatrixCoreClient } from "../../../npm/index.js";
 import type {
   MatrixNativeConfig,
   MatrixNativeDiagnostics,
+  MatrixEmojiUsageRequest,
+  MatrixListEmojiRequest,
+  MatrixListReactionsRequest,
   MatrixNativeEvent,
+  MatrixReactRequest,
+  MatrixReactResult,
+  MatrixReactionSummary,
   MatrixSendRequest,
   MatrixSendResult,
 } from "../../types.js";
@@ -14,13 +20,17 @@ type NativeBindingClient = {
   pollEvents(): string;
   diagnostics(): string;
   sendMessage(requestJson: string): string;
+  reactMessage(requestJson: string): string;
+  listReactions(requestJson: string): string;
+  recordCustomEmojiUsage(requestJson: string): void;
+  listKnownShortcodes(requestJson: string): string;
 };
 
 export class MatrixNativeClient {
   readonly #client: NativeBindingClient;
 
   constructor() {
-    this.#client = new MatrixCoreClient();
+    this.#client = new MatrixCoreClient() as unknown as NativeBindingClient;
   }
 
   start(config: MatrixNativeConfig): MatrixNativeDiagnostics {
@@ -41,5 +51,21 @@ export class MatrixNativeClient {
 
   sendMessage(request: MatrixSendRequest): MatrixSendResult {
     return decodeSendResult(this.#client.sendMessage(JSON.stringify(request)));
+  }
+
+  reactMessage(request: MatrixReactRequest): MatrixReactResult {
+    return JSON.parse(this.#client.reactMessage(JSON.stringify(request))) as MatrixReactResult;
+  }
+
+  listReactions(request: MatrixListReactionsRequest): MatrixReactionSummary[] {
+    return JSON.parse(this.#client.listReactions(JSON.stringify(request))) as MatrixReactionSummary[];
+  }
+
+  recordCustomEmojiUsage(request: MatrixEmojiUsageRequest): void {
+    this.#client.recordCustomEmojiUsage(JSON.stringify(request));
+  }
+
+  listKnownShortcodes(request: MatrixListEmojiRequest = {}): string[] {
+    return JSON.parse(this.#client.listKnownShortcodes(JSON.stringify(request))) as string[];
   }
 }

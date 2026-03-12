@@ -54,6 +54,7 @@ export function resolveNativeConfig(params: {
       cryptoStoreDir: path.join(rootDir, "crypto-store"),
       mediaCacheDir: path.join(rootDir, "media-cache"),
       emojiCatalogFile: path.join(rootDir, "emoji-catalog.json"),
+      reactionsFile: path.join(rootDir, "reactions.json"),
       logsDir: path.join(rootDir, "logs"),
     },
     roomOverrides,

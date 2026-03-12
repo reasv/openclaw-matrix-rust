@@ -98,6 +98,7 @@ export type MatrixNativeConfig = {
     cryptoStoreDir: string;
     mediaCacheDir: string;
     emojiCatalogFile: string;
+    reactionsFile: string;
     logsDir: string;
   };
   roomOverrides: Record<
@@ -163,4 +164,61 @@ export type MatrixSendResult = {
   roomId: string;
   messageId: string;
   threadId?: string;
+};
+
+export type MatrixReactionKind = "unicode" | "custom" | "text";
+
+export type MatrixReactionInfo = {
+  raw: string;
+  normalized: string;
+  display: string;
+  kind: MatrixReactionKind;
+  shortcode?: string;
+};
+
+export type MatrixReactionSummary = {
+  key: string;
+  normalizedKey: string;
+  display: string;
+  kind: MatrixReactionKind;
+  shortcode?: string;
+  count: number;
+  users: string[];
+  rawKeys: string[];
+};
+
+export type MatrixReactRequest = {
+  roomId: string;
+  messageId: string;
+  key: string;
+  remove?: boolean;
+  senderId?: string;
+};
+
+export type MatrixReactResult = {
+  removed: number;
+  reaction?: MatrixReactionInfo | null;
+};
+
+export type MatrixEmojiUsageRef = {
+  shortcode: string;
+  mxcUrl: string;
+};
+
+export type MatrixEmojiUsageRequest = {
+  emoji: MatrixEmojiUsageRef[];
+  roomId?: string;
+  observedAtMs?: number;
+};
+
+export type MatrixListReactionsRequest = {
+  roomId: string;
+  messageId: string;
+  limit?: number;
+};
+
+export type MatrixListEmojiRequest = {
+  roomId?: string;
+  limit?: number;
+  nowMs?: number;
 };

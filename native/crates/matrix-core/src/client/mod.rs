@@ -4,12 +4,13 @@ use chrono::Utc;
 
 use crate::{
     api::{
-        MatrixClientConfig, MatrixDiagnostics, MatrixKeyBackupState, MatrixNativeEvent,
-        MatrixSendRequest, MatrixSendResult, MatrixSyncState, MatrixVerificationState,
-        NativeLifecycleStage, StoredSession,
+        MatrixClientConfig, MatrixCustomEmojiUsageRequest, MatrixDiagnostics, MatrixKeyBackupState,
+        MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixNativeEvent, MatrixReactRequest,
+        MatrixReactResult, MatrixReactionSummary, MatrixSendRequest, MatrixSendResult,
+        MatrixSyncState, MatrixVerificationState, NativeLifecycleStage, StoredSession,
     },
     auth::session,
-    crypto, state, sync, MatrixError, MatrixResult,
+    crypto, emoji, reactions, state, sync, MatrixError, MatrixResult,
 };
 
 pub struct MatrixCoreService {
@@ -141,6 +142,55 @@ impl MatrixCoreService {
         })
     }
 
+    pub fn react_message(&mut self, request: MatrixReactRequest) -> MatrixResult<MatrixReactResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        let sender_id = self
+            .session
+            .as_ref()
+            .map(|session| session.user_id.as_str())
+            .unwrap_or(self.diagnostics.user_id.as_str());
+        reactions::react_message(config, &request, sender_id)
+    }
+
+    pub fn list_reactions(
+        &self,
+        request: MatrixListReactionsRequest,
+    ) -> MatrixResult<Vec<MatrixReactionSummary>> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        reactions::list_reactions(config, &request)
+    }
+
+    pub fn record_custom_emoji_usage(
+        &self,
+        request: MatrixCustomEmojiUsageRequest,
+    ) -> MatrixResult<()> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        emoji::record_usage(config, &request)
+    }
+
+    pub fn list_known_shortcodes(
+        &self,
+        request: MatrixListEmojiRequest,
+    ) -> MatrixResult<Vec<String>> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        emoji::list_shortcodes(config, &request)
+    }
+
     fn push_lifecycle(&mut self, stage: NativeLifecycleStage, detail: &str) {
         self.events.push_back(MatrixNativeEvent::Lifecycle {
             stage,
@@ -186,6 +236,7 @@ mod tests {
                 crypto_store_dir: root.join("crypto-store").display().to_string(),
                 media_cache_dir: root.join("media-cache").display().to_string(),
                 emoji_catalog_file: root.join("emoji.json").display().to_string(),
+                reactions_file: root.join("reactions.json").display().to_string(),
                 logs_dir: root.join("logs").display().to_string(),
             },
             room_overrides: Default::default(),

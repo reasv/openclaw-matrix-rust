@@ -16,7 +16,10 @@ use napi_derive::napi;
 use thiserror::Error;
 
 use crate::{
-    api::{MatrixClientConfig, MatrixSendRequest},
+    api::{
+        MatrixClientConfig, MatrixCustomEmojiUsageRequest, MatrixListEmojiRequest,
+        MatrixListReactionsRequest, MatrixReactRequest, MatrixSendRequest,
+    },
     client::MatrixCoreService,
 };
 
@@ -86,6 +89,41 @@ impl MatrixCoreClient {
             serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
         let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
         let result = inner.send_message(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "reactMessage")]
+    pub fn react_message(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixReactRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.react_message(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "listReactions")]
+    pub fn list_reactions(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixListReactionsRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.list_reactions(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "recordCustomEmojiUsage")]
+    pub fn record_custom_emoji_usage(&self, request_json: String) -> napi::Result<()> {
+        let request: MatrixCustomEmojiUsageRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        inner.record_custom_emoji_usage(request).map_err(to_napi_error)
+    }
+
+    #[napi(js_name = "listKnownShortcodes")]
+    pub fn list_known_shortcodes(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixListEmojiRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.list_known_shortcodes(request).map_err(to_napi_error)?;
         serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
     }
 }
