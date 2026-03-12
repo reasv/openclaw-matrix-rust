@@ -1,3 +1,6 @@
 [workspace]
 members = ["crates/matrix-core"]
 resolver = "2"
+
+[patch.crates-io]
+matrix-sdk = { path = "vendor/matrix-sdk" }

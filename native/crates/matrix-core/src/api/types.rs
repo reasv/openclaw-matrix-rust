@@ -241,9 +241,12 @@ pub struct MatrixListEmojiRequest {
 pub struct StoredSession {
     pub account_id: String,
     pub homeserver: String,
+    pub auth_mode: String,
     pub user_id: String,
     pub device_id: String,
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub sync_token: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub auth_mode: String,
 }

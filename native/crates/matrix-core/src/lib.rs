@@ -13,6 +13,7 @@ mod sync;
 use std::sync::Mutex;
 
 use napi_derive::napi;
+use matrix_sdk::ruma::IdParseError;
 use thiserror::Error;
 
 use crate::{
@@ -33,6 +34,14 @@ enum MatrixError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    #[error(transparent)]
+    MatrixSdk(#[from] matrix_sdk::Error),
+    #[error(transparent)]
+    MatrixBuild(#[from] matrix_sdk::ClientBuildError),
+    #[error(transparent)]
+    IdParse(#[from] IdParseError),
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
 }
 
 fn to_napi_error(err: MatrixError) -> napi::Error {
