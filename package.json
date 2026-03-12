@@ -1,0 +1,45 @@
+{
+  "name": "@openclaw/matrix-rust",
+  "version": "0.1.0",
+  "description": "OpenClaw Matrix channel plugin backed by a Rust native core",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm build:native && pnpm typecheck && pnpm test",
+    "build:native": "napi build --platform --cargo-cwd native/crates/matrix-core --js-package-name @openclaw/matrix-rust npm",
+    "test": "cargo test --manifest-path native/Cargo.toml && node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.11"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^22.15.0",
+    "openclaw": "file:../openclaw",
+    "tsx": "^4.20.5",
+    "typescript": "^5.8.2"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "matrix",
+      "label": "Matrix",
+      "selectionLabel": "Matrix (Rust core)",
+      "docsPath": "/channels/matrix",
+      "docsLabel": "matrix",
+      "blurb": "Matrix connector with a Rust native core for lifecycle, crypto, and sync.",
+      "order": 70,
+      "quickstartAllowFrom": true
+    },
+    "install": {
+      "npmSpec": "@openclaw/matrix-rust",
+      "localPath": "openclaw-matrix-rust",
+      "defaultChoice": "npm"
+    }
+  }
+}

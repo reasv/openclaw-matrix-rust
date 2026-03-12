@@ -1,0 +1,29 @@
+# Dependencies
+/node_modules/
+
+# Rust build output
+/native/target/
+
+# Generated napi package artifacts
+/npm/
+*.node
+
+# Test and diagnostic output
+coverage/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment overrides
+.env
+.env.local
+.env.*.local
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
