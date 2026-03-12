@@ -48,6 +48,24 @@ export function getOrCreateMatrixClient(accountId: string): MatrixNativeClient {
   return next;
 }
 
+function isClientReady(client: MatrixNativeClient): boolean {
+  const diagnostics = client.diagnostics();
+  return diagnostics.syncState !== "stopped" && Boolean(diagnostics.userId);
+}
+
+export function ensureMatrixClientStarted(account: ResolvedMatrixAccount): MatrixNativeClient {
+  const client = getOrCreateMatrixClient(account.accountId);
+  if (!isClientReady(client)) {
+    client.start(
+      resolveNativeConfig({
+        account,
+        runtime: getMatrixRustRuntime(),
+      }),
+    );
+  }
+  return client;
+}
+
 function destroyMatrixClient(accountId: string): void {
   activeClients.delete(normalizeAccountId(accountId));
 }
@@ -188,7 +206,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
     normalizeAllowEntry: (entry) => entry.replace(/^matrix:/i, ""),
     notifyApproval: async ({ id, cfg, accountId }) => {
       const account = resolveMatrixRustAccount({ cfg: cfg as CoreConfig, accountId });
-      const client = getOrCreateMatrixClient(account.accountId);
+      const client = ensureMatrixClientStarted(account);
       try {
         client.sendMessage({
           roomId: `user:${id}`,
@@ -251,12 +269,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         cfg: cfg as CoreConfig,
         accountId,
       });
-      const client = getOrCreateMatrixClient(account.accountId);
-      try {
-        client.diagnostics();
-      } catch {
-        client.start(resolveNativeConfig({ account, runtime: getMatrixRustRuntime() }));
-      }
+      const client = ensureMatrixClientStarted(account);
       const result = client.sendMessage({
         roomId: to,
         text: text ?? "",
