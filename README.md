@@ -1,6 +1,6 @@
 # OpenClaw Matrix Rust Connector
 
-This repository is the parallel Matrix rewrite described in `../Plan.md`.
+This is an OpenClaw Matrix channel connector based on the Rust matrix-sdk, written mainly in order to properly support E2EE verification, which doesn't work with the official matrix integration.
 
 It keeps the OpenClaw plugin shell in TypeScript and moves the Matrix lifecycle boundary into a Rust `napi-rs` native core. The current implementation is the Phase 1 scaffold plus a minimal Phase 2 bootstrap:
 
@@ -28,5 +28,3 @@ Current limitations:
 - no live Matrix network traffic yet
 - no Matrix SDK integration yet
 - action parity is not complete
-
-Those are the next phases in `Plan.md`, but the repository is now ready for that work without extending the old plugin.
