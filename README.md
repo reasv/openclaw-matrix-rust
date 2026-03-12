@@ -34,4 +34,4 @@ Current limitations:
 
 Implementation note:
 
-- the repo vendors `matrix-sdk` 0.16.0 under `native/vendor/matrix-sdk` with a one-line recursion-limit patch so it builds on the current Rust 1.94 toolchain
+- the repo pins Rust to `1.93.0` because `matrix-sdk` `0.16.0` does not build cleanly on the current local `1.94.0` toolchain
