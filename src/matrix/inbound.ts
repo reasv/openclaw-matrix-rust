@@ -350,6 +350,75 @@ export async function resolveMatrixReplyContext(params: {
   };
 }
 
+export async function resolveMatrixThreadContext(params: {
+  account: ResolvedMatrixAccount;
+  client: MatrixNativeClient;
+  roomId: string;
+  threadRootId?: string;
+  threadSessionExists: boolean;
+  conversationLabel: string;
+  parentSessionKey: string;
+  envelopeOptions?: unknown;
+  formatAgentEnvelope: (params: {
+    channel: string;
+    from: string;
+    timestamp?: string | number | Date;
+    envelope?: unknown;
+    body: string;
+  }) => string;
+  log?: { debug?: (message: string) => void };
+}): Promise<{
+  threadStarterBody?: string;
+  threadLabel?: string;
+  parentSessionKey?: string;
+}> {
+  if (!params.threadRootId || params.threadSessionExists) {
+    return {};
+  }
+
+  try {
+    const rootEvent = params.client.messageSummary({
+      roomId: params.roomId,
+      eventId: params.threadRootId,
+    });
+    if (!rootEvent?.body) {
+      return {};
+    }
+
+    let threadFrom = rootEvent.sender ?? "Unknown";
+    if (rootEvent.sender) {
+      try {
+        const member = params.client.memberInfo({
+          roomId: params.roomId,
+          userId: rootEvent.sender,
+        });
+        threadFrom = member.displayName?.trim() || threadFrom;
+      } catch (err) {
+        params.log?.debug?.(
+          `[matrix:${params.account.accountId}] failed to resolve thread starter sender ${rootEvent.sender}: ${String(err)}`,
+        );
+      }
+    }
+
+    return {
+      threadStarterBody: params.formatAgentEnvelope({
+        channel: "Matrix",
+        from: threadFrom,
+        timestamp: rootEvent.timestamp,
+        envelope: params.envelopeOptions,
+        body: rootEvent.body,
+      }),
+      threadLabel: `Matrix thread in ${params.conversationLabel}`,
+      parentSessionKey: params.parentSessionKey,
+    };
+  } catch (err) {
+    params.log?.debug?.(
+      `[matrix:${params.account.accountId}] failed to resolve thread starter ${params.threadRootId}: ${String(err)}`,
+    );
+    return {};
+  }
+}
+
 export function resolveGroupPolicy(params: {
   cfg: CoreConfig;
   account: ResolvedMatrixAccount;
@@ -890,6 +959,18 @@ export async function handleMatrixInboundEvent(params: {
     sessionKey: route.sessionKey,
   });
   const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions?.(cfg);
+  const threadContext = await resolveMatrixThreadContext({
+    account,
+    client,
+    roomId: event.roomId,
+    threadRootId: event.threadRootId,
+    threadSessionExists: previousTimestamp !== undefined,
+    conversationLabel,
+    parentSessionKey: routeSession.sessionKey,
+    envelopeOptions,
+    formatAgentEnvelope: runtime.channel.reply.formatAgentEnvelope,
+    log,
+  });
   const presentation = buildMatrixInboundPresentation({
     event,
     isDirectMessage,
@@ -960,6 +1041,9 @@ export async function handleMatrixInboundEvent(params: {
     OriginatingChannel: "matrix",
     OriginatingTo: `room:${event.roomId}`,
     LinkPreviews: previewTextBlocks.length > 0 ? previewTextBlocks : undefined,
+    ThreadStarterBody: threadContext.threadStarterBody,
+    ThreadLabel: threadContext.threadLabel,
+    ParentSessionKey: threadContext.parentSessionKey,
   });
 
   await runtime.channel.session.recordInboundSession({

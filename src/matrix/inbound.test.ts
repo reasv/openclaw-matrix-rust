@@ -6,6 +6,7 @@ import {
   detectExplicitMention,
   extractMatrixCustomEmojiUsageFromFormattedBody,
   resolveMatrixReplyContext,
+  resolveMatrixThreadContext,
   resolveGroupPolicy,
 } from "./inbound.js";
 import {
@@ -282,4 +283,57 @@ test("resolves reply context with display names and one-hop previews", async () 
   assert.deepEqual(replyContext.replyPreviewMedia, [
     { path: "/tmp/reply-preview.png", contentType: "image/png" },
   ]);
+});
+
+test("resolves thread starter context for a new thread session", async () => {
+  const cfg: CoreConfig = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+      },
+    },
+  } as CoreConfig;
+  const account: ResolvedMatrixAccount = {
+    accountId: "default",
+    enabled: true,
+    configured: true,
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    authMode: "password",
+    config: cfg.channels?.matrix as ResolvedMatrixAccount["config"],
+  };
+
+  const threadContext = await resolveMatrixThreadContext({
+    account,
+    client: {
+      messageSummary: ({ eventId }: { eventId: string }) => ({
+        eventId,
+        sender: "@alice:example.org",
+        body: "root body",
+        timestamp: "2026-03-14T12:00:00.000Z",
+      }),
+      memberInfo: ({ userId }: { userId: string }) => ({
+        roomId: "!room:example.org",
+        userId,
+        displayName: "Alice",
+        isSelf: false,
+        isDirect: false,
+      }),
+    } as any,
+    roomId: "!room:example.org",
+    threadRootId: "$thread-root",
+    threadSessionExists: false,
+    conversationLabel: "Infra",
+    parentSessionKey: "agent:main:matrix:channel:!room:example.org",
+    envelopeOptions: {},
+    formatAgentEnvelope: (params) => `thread:${params.from}:${params.body}`,
+  });
+
+  assert.deepEqual(threadContext, {
+    threadStarterBody: "thread:Alice:root body",
+    threadLabel: "Matrix thread in Infra",
+    parentSessionKey: "agent:main:matrix:channel:!room:example.org",
+  });
 });
