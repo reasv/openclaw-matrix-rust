@@ -8,6 +8,12 @@ import type {
   MatrixThreadRepliesMode,
 } from "../types.js";
 
+const MAX_INBOUND_HISTORY = 12;
+const inboundHistories = new Map<
+  string,
+  Array<{ sender: string; body: string; timestamp?: number }>
+>();
+
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
   const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
   return limitMb * 1024 * 1024;
@@ -52,6 +58,22 @@ function resolveRoomConfig(
     rooms[event.roomId] ??
     (event.roomAlias ? rooms[event.roomAlias] : undefined)
   );
+}
+
+function appendInboundHistory(params: {
+  sessionKey: string;
+  event: MatrixInboundEvent;
+}): Array<{ sender: string; body: string; timestamp?: number }> {
+  const entry = {
+    sender: params.event.senderName ?? params.event.senderId,
+    body: params.event.body.trim(),
+    timestamp: Date.parse(params.event.timestamp),
+  };
+  const next = [...(inboundHistories.get(params.sessionKey) ?? []), entry]
+    .filter((item) => item.body)
+    .slice(-MAX_INBOUND_HISTORY);
+  inboundHistories.set(params.sessionKey, next);
+  return next.slice(0, -1);
 }
 
 function resolveThreadRepliesMode(
@@ -341,6 +363,10 @@ export async function handleMatrixInboundEvent(params: {
           mentionRegexes,
           explicitWasMentioned: explicitMention,
         });
+  const inboundHistory = appendInboundHistory({
+    sessionKey: route.sessionKey,
+    event,
+  });
   if (event.chatType !== "direct" && shouldRequireMention(account, event) && !wasMentioned) {
     return;
   }
@@ -355,6 +381,7 @@ export async function handleMatrixInboundEvent(params: {
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: bodyText,
     BodyForAgent: bodyText,
+    InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
     RawBody: bodyText,
     CommandBody: bodyText,
     From: isDirectMessage ? `matrix:${event.senderId}` : `matrix:channel:${event.roomId}`,
