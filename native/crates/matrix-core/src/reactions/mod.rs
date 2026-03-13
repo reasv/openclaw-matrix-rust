@@ -1,9 +1,8 @@
 use crate::{
-    api::{
-        MatrixClientConfig, MatrixReactionInfo, MatrixReactionKeyKind,
-    },
+    api::{MatrixClientConfig, MatrixReactionInfo, MatrixReactionKeyKind},
     emoji, MatrixError, MatrixResult,
 };
+use serde_json::Value;
 
 pub fn resolve_reaction_key_info(
     config: &MatrixClientConfig,
@@ -57,6 +56,29 @@ pub fn resolve_reaction_key_info(
         kind,
         shortcode,
     })
+}
+
+pub fn serialize_shortcode_metadata(shortcode: Option<&str>) -> Option<String> {
+    let normalized = shortcode.and_then(emoji::normalize_shortcode)?;
+    Some(
+        normalized
+            .trim_start_matches(':')
+            .trim_end_matches(':')
+            .to_string(),
+    )
+}
+
+pub fn read_reaction_shortcode(content: &Value) -> Option<String> {
+    let relates_to = content.get("m.relates_to");
+    let raw = relates_to
+        .and_then(|value| value.get("shortcode"))
+        .or_else(|| relates_to.and_then(|value| value.get("com.beeper.reaction.shortcode")))
+        .or_else(|| relates_to.and_then(|value| value.get("org.matrix.msc4027.shortcode")))
+        .or_else(|| content.get("shortcode"))
+        .or_else(|| content.get("com.beeper.reaction.shortcode"))
+        .or_else(|| content.get("org.matrix.msc4027.shortcode"))
+        .and_then(Value::as_str)?;
+    emoji::normalize_shortcode(raw)
 }
 
 fn decode_matrix_to_target(raw: &str) -> String {
@@ -118,7 +140,9 @@ mod tests {
         MatrixStateLayout,
     };
 
-    use super::resolve_reaction_key_info;
+    use serde_json::json;
+
+    use super::{read_reaction_shortcode, resolve_reaction_key_info, serialize_shortcode_metadata};
 
     fn unique_root() -> PathBuf {
         std::env::temp_dir().join(format!("openclaw-matrix-rust-reactions-{}", Uuid::new_v4()))
@@ -183,5 +207,35 @@ mod tests {
         assert_eq!(reaction.kind, crate::api::MatrixReactionKeyKind::Custom);
         assert_eq!(reaction.normalized, "mxc://example/blobwave");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn serializes_reaction_shortcode_without_colons() {
+        assert_eq!(
+            serialize_shortcode_metadata(Some(":blobwave:")),
+            Some("blobwave".to_string())
+        );
+        assert_eq!(
+            serialize_shortcode_metadata(Some("blobwave")),
+            Some("blobwave".to_string())
+        );
+    }
+
+    #[test]
+    fn reads_nested_and_top_level_reaction_shortcode_metadata() {
+        assert_eq!(
+            read_reaction_shortcode(&json!({
+                "m.relates_to": {
+                    "shortcode": "blobwave"
+                }
+            })),
+            Some(":blobwave:".to_string())
+        );
+        assert_eq!(
+            read_reaction_shortcode(&json!({
+                "org.matrix.msc4027.shortcode": "ohman"
+            })),
+            Some(":ohman:".to_string())
+        );
     }
 }

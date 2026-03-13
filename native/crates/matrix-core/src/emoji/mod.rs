@@ -69,26 +69,29 @@ pub fn record_usage(
 
     for emoji in unique {
         let key = entry_key(&emoji.shortcode, &emoji.mxc_url);
-        let mut entry = entries.remove(&key).unwrap_or(MatrixCustomEmojiCatalogEntry {
-            shortcode: emoji.shortcode.clone(),
-            mxc_url: emoji.mxc_url.clone(),
-            first_seen_ts: now_ms,
-            last_seen_ts: now_ms,
-            global_message_count: 0,
-            global_last_message_ts: now_ms,
-            rooms: BTreeMap::new(),
-        });
+        let mut entry = entries
+            .remove(&key)
+            .unwrap_or(MatrixCustomEmojiCatalogEntry {
+                shortcode: emoji.shortcode.clone(),
+                mxc_url: emoji.mxc_url.clone(),
+                first_seen_ts: now_ms,
+                last_seen_ts: now_ms,
+                global_message_count: 0,
+                global_last_message_ts: now_ms,
+                rooms: BTreeMap::new(),
+            });
         entry.last_seen_ts = entry.last_seen_ts.max(now_ms);
         entry.global_message_count += 1;
         entry.global_last_message_ts = entry.global_last_message_ts.max(now_ms);
         if let Some(room_id) = &room_id {
-            let room_stats = entry
-                .rooms
-                .entry(room_id.clone())
-                .or_insert(MatrixCustomEmojiRoomStats {
-                    message_count: 0,
-                    last_message_ts: now_ms,
-                });
+            let room_stats =
+                entry
+                    .rooms
+                    .entry(room_id.clone())
+                    .or_insert(MatrixCustomEmojiRoomStats {
+                        message_count: 0,
+                        last_message_ts: now_ms,
+                    });
             room_stats.message_count += 1;
             room_stats.last_message_ts = room_stats.last_message_ts.max(now_ms);
         }
@@ -113,7 +116,7 @@ pub fn list_shortcodes(
     let mut output = Vec::new();
     let mut seen = BTreeSet::new();
     for entry in ranked {
-      if seen.insert(entry.shortcode.clone()) {
+        if seen.insert(entry.shortcode.clone()) {
             output.push(entry.shortcode);
             if request.limit.is_some_and(|limit| output.len() >= limit) {
                 break;
@@ -142,14 +145,11 @@ pub fn resolve_for_shortcode(
 }
 
 #[allow(dead_code)]
-pub fn extract_usage_from_formatted_html(
-    formatted_html: &str,
-) -> Vec<MatrixCustomEmojiRef> {
+pub fn extract_usage_from_formatted_html(formatted_html: &str) -> Vec<MatrixCustomEmojiRef> {
     let img_tag_pattern = Regex::new("(?is)<img\\b[^>]*>").expect("valid img regex");
-    let attr_pattern = Regex::new(
-        "(?is)([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
-    )
-    .expect("valid attribute regex");
+    let attr_pattern =
+        Regex::new("(?is)([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+            .expect("valid attribute regex");
     let mut entries = BTreeSet::new();
 
     for tag in img_tag_pattern.find_iter(formatted_html) {
@@ -161,6 +161,7 @@ pub fn extract_usage_from_formatted_html(
 
         let mut src: Option<String> = None;
         let mut alt: Option<String> = None;
+        let mut title: Option<String> = None;
         for captures in attr_pattern.captures_iter(raw_tag) {
             let Some(name_match) = captures.get(1) else {
                 continue;
@@ -173,6 +174,7 @@ pub fn extract_usage_from_formatted_html(
             match name_match.as_str().to_ascii_lowercase().as_str() {
                 "src" | "data-mx-src" => src = Some(value.to_string()),
                 "alt" => alt = Some(value.to_string()),
+                "title" => title = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -180,7 +182,7 @@ pub fn extract_usage_from_formatted_html(
         let Some(mxc_url) = src else {
             continue;
         };
-        let Some(shortcode) = alt.and_then(|value| normalize_shortcode(&value)) else {
+        let Some(shortcode) = alt.or(title).and_then(|value| normalize_shortcode(&value)) else {
             continue;
         };
         if mxc_url.starts_with("mxc://") {
@@ -197,8 +199,7 @@ pub fn render_text_with_custom_emoji(
     room_id: Option<&str>,
     now_ms: i64,
 ) -> MatrixResult<Option<String>> {
-    let shortcode_pattern =
-        Regex::new(":[A-Za-z0-9_+\\-]+:").expect("valid shortcode regex");
+    let shortcode_pattern = Regex::new(":[A-Za-z0-9_+\\-]+:").expect("valid shortcode regex");
     let mut rendered = String::new();
     let mut last_index = 0usize;
     let mut replaced = false;
@@ -255,7 +256,14 @@ fn score(entry: &MatrixCustomEmojiCatalogEntry, room_id: Option<&str>, now_ms: i
     let global_score = entry.global_message_count as f64 * decay(global_age, GLOBAL_DECAY_DAYS);
     let room_score = room_id
         .and_then(|room_id| entry.rooms.get(room_id))
-        .map(|room| room.message_count as f64 * decay((now_ms - room.last_message_ts).max(0) as f64, ROOM_DECAY_DAYS) * ROOM_SCORE_BOOST)
+        .map(|room| {
+            room.message_count as f64
+                * decay(
+                    (now_ms - room.last_message_ts).max(0) as f64,
+                    ROOM_DECAY_DAYS,
+                )
+                * ROOM_SCORE_BOOST
+        })
         .unwrap_or(0.0);
     global_score + room_score
 }
@@ -332,8 +340,8 @@ mod tests {
     };
 
     use super::{
-        extract_usage_from_formatted_html, list_entries_ranked, list_shortcodes, normalize_shortcode,
-        record_usage, render_text_with_custom_emoji, resolve_for_shortcode,
+        extract_usage_from_formatted_html, list_entries_ranked, list_shortcodes,
+        normalize_shortcode, record_usage, render_text_with_custom_emoji, resolve_for_shortcode,
     };
 
     fn unique_root() -> PathBuf {
@@ -370,7 +378,10 @@ mod tests {
 
     #[test]
     fn normalizes_bare_shortcodes() {
-        assert_eq!(normalize_shortcode("party_parrot"), Some(":party_parrot:".to_string()));
+        assert_eq!(
+            normalize_shortcode("party_parrot"),
+            Some(":party_parrot:".to_string())
+        );
     }
 
     #[test]
@@ -446,7 +457,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(shortcodes, vec![":catjam:".to_string(), ":ohman:".to_string()]);
+        assert_eq!(
+            shortcodes,
+            vec![":catjam:".to_string(), ":ohman:".to_string()]
+        );
 
         let ranked = list_entries_ranked(&config, Some("!room:example.org"), 2000).unwrap();
         assert_eq!(ranked.len(), 2);
@@ -483,6 +497,16 @@ mod tests {
     }
 
     #[test]
+    fn extracts_custom_emoji_from_title_only_markup() {
+        let entries = extract_usage_from_formatted_html(
+            r#"<p>Hello <img data-mx-emoticon src="mxc://example/ohman" title="ohman" /></p>"#,
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].shortcode, ":ohman:");
+        assert_eq!(entries[0].mxc_url, "mxc://example/ohman");
+    }
+
+    #[test]
     fn renders_known_shortcodes_as_matrix_emoticons() {
         let root = unique_root();
         let config = sample_config(&root);
@@ -499,14 +523,10 @@ mod tests {
         )
         .unwrap();
 
-        let html = render_text_with_custom_emoji(
-            &config,
-            "hello :blobwave:",
-            Some("!room:example"),
-            200,
-        )
-        .unwrap()
-        .unwrap();
+        let html =
+            render_text_with_custom_emoji(&config, "hello :blobwave:", Some("!room:example"), 200)
+                .unwrap()
+                .unwrap();
         assert!(html.contains("data-mx-emoticon"));
         assert!(html.contains("mxc://example/blobwave"));
 

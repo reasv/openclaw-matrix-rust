@@ -16,6 +16,19 @@ test("extracts custom emoji regardless of attribute order", () => {
   ]);
 });
 
+test("extracts custom emoji from title-only markup and normalizes bare titles", () => {
+  const entries = extractMatrixCustomEmojiUsageFromFormattedBody(
+    '<p><img data-mx-emoticon src="mxc://example.org/ohman" title="ohman" /></p>',
+  );
+
+  assert.deepEqual(entries, [
+    {
+      mxcUrl: "mxc://example.org/ohman",
+      shortcode: ":ohman:",
+    },
+  ]);
+});
+
 test("ignores non-emoticon images and deduplicates matches", () => {
   const entries = extractMatrixCustomEmojiUsageFromFormattedBody(
     [

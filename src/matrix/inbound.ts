@@ -191,6 +191,19 @@ export function extractMatrixCustomEmojiUsageFromFormattedBody(
   const attrPattern =
     /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gis;
   const entries = new Map<string, { mxcUrl: string; shortcode: string }>();
+  const normalizeShortcode = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return "";
+    }
+    if (/^:[^:\s]+:$/.test(trimmed)) {
+      return trimmed;
+    }
+    if (/^[A-Za-z0-9_+\-]+$/.test(trimmed)) {
+      return `:${trimmed}:`;
+    }
+    return trimmed;
+  };
 
   for (const match of formattedBody.matchAll(imgTagPattern)) {
     const rawTag = match[0] ?? "";
@@ -200,6 +213,7 @@ export function extractMatrixCustomEmojiUsageFromFormattedBody(
 
     let mxcUrl = "";
     let shortcode = "";
+    let title = "";
     for (const captures of rawTag.matchAll(attrPattern)) {
       const name = (captures[1] ?? "").toLowerCase();
       const value = captures[2] ?? captures[3] ?? "";
@@ -207,9 +221,12 @@ export function extractMatrixCustomEmojiUsageFromFormattedBody(
         mxcUrl = value;
       } else if (name === "alt" && !shortcode) {
         shortcode = value;
+      } else if (name === "title" && !title) {
+        title = value;
       }
     }
 
+    shortcode = normalizeShortcode(shortcode || title);
     if (!mxcUrl.startsWith("mxc://") || !shortcode.startsWith(":")) {
       continue;
     }

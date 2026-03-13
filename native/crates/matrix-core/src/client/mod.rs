@@ -6,34 +6,27 @@ use std::{
 
 use chrono::Utc;
 use matrix_sdk::{
-    Client,
-    Error as MatrixSdkError,
-    HttpError,
-    RefreshTokenError,
-    Room,
-    RoomState,
-    SessionTokens,
     config::RequestConfig,
     deserialized_responses::SyncOrStrippedState,
     encryption::EncryptionSettings,
-    room::{IncludeRelations, MessagesOptions, RelationsOptions, edit::EditedContent},
+    room::{edit::EditedContent, IncludeRelations, MessagesOptions, RelationsOptions},
     ruma::{
-        EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId,
-        RoomOrAliasId, RoomId, UInt, UserId,
         api::Direction,
-        events::{
-            AnySyncMessageLikeEvent, AnySyncTimelineEvent, TimelineEventType,
-            reaction::ReactionEventContent,
-            relation::{Annotation, RelationType},
-        },
-        events::room::pinned_events::RoomPinnedEventsEventContent,
         events::room::message::{
             OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation,
         },
+        events::room::pinned_events::RoomPinnedEventsEventContent,
+        events::{
+            relation::RelationType, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+            TimelineEventType,
+        },
+        EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomId,
+        RoomOrAliasId, UInt, UserId,
     },
+    Client, Error as MatrixSdkError, HttpError, RefreshTokenError, Room, RoomState, SessionTokens,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 
 use crate::{
@@ -79,7 +72,10 @@ impl SharedState {
     }
 
     fn reset(&self) {
-        *self.diagnostics.lock().expect("matrix diagnostics mutex poisoned") = MatrixDiagnostics {
+        *self
+            .diagnostics
+            .lock()
+            .expect("matrix diagnostics mutex poisoned") = MatrixDiagnostics {
             account_id: String::new(),
             user_id: String::new(),
             device_id: String::new(),
@@ -90,19 +86,31 @@ impl SharedState {
             last_successful_decryption_at: None,
             started_at: None,
         };
-        self.events.lock().expect("matrix event queue mutex poisoned").clear();
+        self.events
+            .lock()
+            .expect("matrix event queue mutex poisoned")
+            .clear();
     }
 
     fn diagnostics(&self) -> MatrixDiagnostics {
-        self.diagnostics.lock().expect("matrix diagnostics mutex poisoned").clone()
+        self.diagnostics
+            .lock()
+            .expect("matrix diagnostics mutex poisoned")
+            .clone()
     }
 
     fn set_diagnostics(&self, diagnostics: MatrixDiagnostics) {
-        *self.diagnostics.lock().expect("matrix diagnostics mutex poisoned") = diagnostics;
+        *self
+            .diagnostics
+            .lock()
+            .expect("matrix diagnostics mutex poisoned") = diagnostics;
     }
 
     fn update_diagnostics(&self, update: impl FnOnce(&mut MatrixDiagnostics)) {
-        let mut diagnostics = self.diagnostics.lock().expect("matrix diagnostics mutex poisoned");
+        let mut diagnostics = self
+            .diagnostics
+            .lock()
+            .expect("matrix diagnostics mutex poisoned");
         update(&mut diagnostics);
     }
 
@@ -133,7 +141,10 @@ impl SharedState {
     }
 
     fn set_sync_state(&self, state: MatrixSyncState) {
-        let mut diagnostics = self.diagnostics.lock().expect("matrix diagnostics mutex poisoned");
+        let mut diagnostics = self
+            .diagnostics
+            .lock()
+            .expect("matrix diagnostics mutex poisoned");
         if diagnostics.sync_state == state {
             return;
         }
@@ -143,7 +154,10 @@ impl SharedState {
         self.events
             .lock()
             .expect("matrix event queue mutex poisoned")
-            .push_back(MatrixNativeEvent::SyncState { state, at: Utc::now() });
+            .push_back(MatrixNativeEvent::SyncState {
+                state,
+                at: Utc::now(),
+            });
     }
 }
 
@@ -177,8 +191,10 @@ impl MatrixCoreService {
 
         state::ensure_layout(&config.state_layout)?;
         self.shared.reset();
-        self.shared
-            .push_lifecycle(NativeLifecycleStage::LoadSession, "loading persisted session");
+        self.shared.push_lifecycle(
+            NativeLifecycleStage::LoadSession,
+            "loading persisted session",
+        );
         let existing_session = session::load_session(&config)?;
 
         self.shared.push_lifecycle(
@@ -203,20 +219,25 @@ impl MatrixCoreService {
 
         self.shared.push_lifecycle(
             NativeLifecycleStage::PersistSession,
-            format!("persisted matrix session at {}", config.state_layout.session_file),
+            format!(
+                "persisted matrix session at {}",
+                config.state_layout.session_file
+            ),
         );
         self.shared.push_lifecycle(
             NativeLifecycleStage::InitCrypto,
             "persistent crypto identity loaded from sqlite store",
         );
 
-        let recovery_detail = self
-            .runtime
-            .block_on(async { crypto::restore_recovery(&client, config.recovery_key.as_deref()).await });
+        let recovery_detail = self.runtime.block_on(async {
+            crypto::restore_recovery(&client, config.recovery_key.as_deref()).await
+        });
         self.shared
             .push_lifecycle(NativeLifecycleStage::RestoreRecovery, recovery_detail);
 
-        let backup_detail = self.runtime.block_on(async { crypto::ensure_backup(&client).await });
+        let backup_detail = self
+            .runtime
+            .block_on(async { crypto::ensure_backup(&client).await });
         self.shared
             .push_lifecycle(NativeLifecycleStage::EnableBackup, backup_detail);
 
@@ -271,8 +292,11 @@ impl MatrixCoreService {
             }
         };
 
-        register_inbound_handler(&client, self.shared.clone());
-        *self.client_slot.lock().expect("matrix client slot mutex poisoned") = Some(client.clone());
+        register_inbound_handler(&client, self.shared.clone(), config.clone());
+        *self
+            .client_slot
+            .lock()
+            .expect("matrix client slot mutex poisoned") = Some(client.clone());
 
         let (stop_tx, stop_rx) = watch::channel(false);
         let sync_task = self.runtime.spawn(run_sync_loop(
@@ -385,7 +409,9 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        let result = self.runtime.block_on(join_room_internal(&client, &request.target))?;
+        let result = self
+            .runtime
+            .block_on(join_room_internal(&client, &request.target))?;
         Ok(result)
     }
 
@@ -397,7 +423,8 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime.block_on(read_messages_internal(&client, &request))
+        self.runtime
+            .block_on(read_messages_internal(&client, &request))
     }
 
     pub fn edit_message(
@@ -424,15 +451,20 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime.block_on(delete_message_internal(&client, &request))
+        self.runtime
+            .block_on(delete_message_internal(&client, &request))
     }
 
-    pub fn pin_message(&mut self, request: MatrixPinMessageRequest) -> MatrixResult<MatrixPinsResult> {
+    pub fn pin_message(
+        &mut self,
+        request: MatrixPinMessageRequest,
+    ) -> MatrixResult<MatrixPinsResult> {
         if !self.running {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime.block_on(pin_message_internal(&client, &request))
+        self.runtime
+            .block_on(pin_message_internal(&client, &request))
     }
 
     pub fn unpin_message(
@@ -443,7 +475,8 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime.block_on(unpin_message_internal(&client, &request))
+        self.runtime
+            .block_on(unpin_message_internal(&client, &request))
     }
 
     pub fn list_pins(&self, request: MatrixListPinsRequest) -> MatrixResult<MatrixPinsResult> {
@@ -459,8 +492,11 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime
-            .block_on(member_info_internal(&client, &request.room_id, &request.user_id))
+        self.runtime.block_on(member_info_internal(
+            &client,
+            &request.room_id,
+            &request.user_id,
+        ))
     }
 
     pub fn channel_info(
@@ -486,7 +522,9 @@ impl MatrixCoreService {
         let (room, resolved_target) = self
             .runtime
             .block_on(resolve_room_for_send(&client, &request.room_id))?;
-        let message_id = self.runtime.block_on(media::upload_media(&room, &request))?;
+        let message_id = self
+            .runtime
+            .block_on(media::upload_media(&room, &request))?;
         Ok(MatrixUploadMediaResult {
             room_id: resolved_target.resolved_room_id,
             message_id,
@@ -503,11 +541,17 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
-        self.runtime
-            .block_on(download_media_internal(&client, &request.room_id, &request.event_id))
+        self.runtime.block_on(download_media_internal(
+            &client,
+            &request.room_id,
+            &request.event_id,
+        ))
     }
 
-    pub fn react_message(&mut self, request: MatrixReactRequest) -> MatrixResult<MatrixReactResult> {
+    pub fn react_message(
+        &mut self,
+        request: MatrixReactRequest,
+    ) -> MatrixResult<MatrixReactResult> {
         if !self.running {
             return Err(MatrixError::State("client is not running".to_string()));
         }
@@ -522,10 +566,7 @@ impl MatrixCoreService {
             .map(|user_id| user_id.to_string())
             .unwrap_or_else(|| self.shared.diagnostics().user_id);
         self.runtime.block_on(react_message_internal(
-            &client,
-            config,
-            &request,
-            &sender_id,
+            &client, config, &request, &sender_id,
         ))
     }
 
@@ -577,8 +618,11 @@ impl MatrixCoreService {
             .session_tokens()
             .map(|tokens| tokens.access_token)
             .ok_or_else(|| MatrixError::State("matrix session is unavailable".to_string()))?;
-        self.runtime
-            .block_on(previews::resolve_link_previews(config, &access_token, &request))
+        self.runtime.block_on(previews::resolve_link_previews(
+            config,
+            &access_token,
+            &request,
+        ))
     }
 
     pub fn set_typing(&mut self, request: MatrixTypingRequest) -> MatrixResult<()> {
@@ -610,11 +654,27 @@ impl MatrixCoreService {
     }
 }
 
-fn register_inbound_handler(client: &Client, shared: Arc<SharedState>) {
+fn register_inbound_handler(client: &Client, shared: Arc<SharedState>, config: MatrixClientConfig) {
     client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
         let shared = shared.clone();
+        let config = config.clone();
         async move {
             if let Some(inbound) = events::normalize_inbound_event(&room, &event).await {
+                let emoji = inbound
+                    .formatted_body
+                    .as_deref()
+                    .map(emoji::extract_usage_from_formatted_html)
+                    .unwrap_or_default();
+                if !emoji.is_empty() {
+                    let _ = emoji::record_usage(
+                        &config,
+                        &crate::api::MatrixCustomEmojiUsageRequest {
+                            emoji,
+                            room_id: Some(inbound.room_id.clone()),
+                            observed_at_ms: Some(inbound.timestamp.timestamp_millis()),
+                        },
+                    );
+                }
                 let now = Utc::now();
                 shared.update_diagnostics(|diagnostics| {
                     diagnostics.last_successful_decryption_at = Some(now);
@@ -654,7 +714,9 @@ fn normalize_target(raw: &str) -> MatrixResult<String> {
     if lowered.starts_with("user:") {
         let user = value["user:".len()..].trim();
         if user.is_empty() {
-            return Err(MatrixError::State("matrix user target is required".to_string()));
+            return Err(MatrixError::State(
+                "matrix user target is required".to_string(),
+            ));
         }
         return Ok(if user.starts_with('@') {
             user.to_string()
@@ -747,9 +809,9 @@ async fn resolve_room_for_send(
 
     let normalized = normalize_target(target)?;
     if normalized.starts_with('@') {
-        let room = client
-            .get_room(&room_id)
-            .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+        let room = client.get_room(&room_id).ok_or_else(|| {
+            MatrixError::State(format!("room {room_id} is not known to the client"))
+        })?;
         return Ok((room, resolved));
     }
 
@@ -903,7 +965,9 @@ async fn edit_message_internal(
 ) -> MatrixResult<MatrixEditMessageResult> {
     let trimmed = request.text.trim();
     if trimmed.is_empty() {
-        return Err(MatrixError::State("matrix edit requires content".to_string()));
+        return Err(MatrixError::State(
+            "matrix edit requires content".to_string(),
+        ));
     }
     let (room, resolved_target) = resolve_room_for_send(client, &request.room_id).await?;
     let message_id = EventId::parse(request.message_id.trim())?.to_owned();
@@ -959,7 +1023,10 @@ async fn read_pinned_events(room: &Room) -> MatrixResult<Vec<OwnedEventId>> {
     })
 }
 
-async fn summarize_pinned_events(room: &Room, pinned: &[OwnedEventId]) -> Vec<crate::api::MatrixMessageSummary> {
+async fn summarize_pinned_events(
+    room: &Room,
+    pinned: &[OwnedEventId],
+) -> Vec<crate::api::MatrixMessageSummary> {
     let mut output = Vec::new();
     for event_id in pinned {
         let Ok(event) = room.load_or_fetch_event(event_id, None).await else {
@@ -1071,10 +1138,7 @@ async fn member_info_internal(
     })
 }
 
-async fn channel_info_internal(
-    client: &Client,
-    room_id: &str,
-) -> MatrixResult<MatrixChannelInfo> {
+async fn channel_info_internal(client: &Client, room_id: &str) -> MatrixResult<MatrixChannelInfo> {
     let room_id: OwnedRoomId = RoomId::parse(room_id.trim())?.to_owned();
     let room = client
         .get_room(&room_id)
@@ -1082,9 +1146,17 @@ async fn channel_info_internal(
 
     Ok(MatrixChannelInfo {
         room_id: room.room_id().to_string(),
-        display_name: room.display_name().await.ok().map(|value| value.to_string()),
+        display_name: room
+            .display_name()
+            .await
+            .ok()
+            .map(|value| value.to_string()),
         canonical_alias: room.canonical_alias().map(|value| value.to_string()),
-        alt_aliases: room.alt_aliases().into_iter().map(|value| value.to_string()).collect(),
+        alt_aliases: room
+            .alt_aliases()
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect(),
         joined: room.state() == RoomState::Joined,
         is_direct: room.is_direct().await.unwrap_or(false),
         member_count: Some(room.clone_info().active_members_count() as u64),
@@ -1109,6 +1181,7 @@ struct MatrixReactionEvent {
     event_id: String,
     sender_id: String,
     key: String,
+    shortcode: Option<String>,
 }
 
 async fn react_message_internal(
@@ -1142,8 +1215,28 @@ async fn react_message_internal(
         });
     }
 
-    let content = ReactionEventContent::new(Annotation::new(message_id, reaction.raw.clone()));
-    let _ = room.send(content).await?;
+    let shortcode = reactions::serialize_shortcode_metadata(reaction.shortcode.as_deref());
+    let mut relates_to = json!({
+        "rel_type": RelationType::Annotation,
+        "event_id": message_id,
+        "key": reaction.raw.clone(),
+    });
+    if let Some(shortcode) = shortcode.as_ref() {
+        relates_to["shortcode"] = Value::String(shortcode.clone());
+        relates_to["com.beeper.reaction.shortcode"] = Value::String(shortcode.clone());
+        relates_to["org.matrix.msc4027.shortcode"] = Value::String(shortcode.clone());
+    }
+
+    let mut content = json!({
+        "m.relates_to": relates_to,
+    });
+    if let Some(shortcode) = shortcode.as_ref() {
+        content["shortcode"] = Value::String(shortcode.clone());
+        content["com.beeper.reaction.shortcode"] = Value::String(shortcode.clone());
+        content["org.matrix.msc4027.shortcode"] = Value::String(shortcode.clone());
+    }
+
+    let _ = room.send_raw("m.reaction", content).await?;
     if reaction.kind == crate::api::MatrixReactionKeyKind::Custom {
         if let Some(shortcode) = reaction.shortcode.as_ref() {
             emoji::record_usage(
@@ -1175,9 +1268,9 @@ async fn list_reactions_internal(
         .await?
         .resolved_room_id;
     let room_id_owned: OwnedRoomId = RoomId::parse(room_id.as_str())?.to_owned();
-    let room = client
-        .get_room(&room_id_owned)
-        .ok_or_else(|| MatrixError::State(format!("room {room_id_owned} is not known to the client")))?;
+    let room = client.get_room(&room_id_owned).ok_or_else(|| {
+        MatrixError::State(format!("room {room_id_owned} is not known to the client"))
+    })?;
     let message_id = EventId::parse(request.message_id.trim())?.to_owned();
     let events = fetch_reaction_events(&room, &message_id, request.limit.unwrap_or(100)).await?;
     let mut summaries = std::collections::BTreeMap::<String, MatrixReactionSummary>::new();
@@ -1189,19 +1282,43 @@ async fn list_reactions_internal(
             Some(room_id.as_str()),
             Utc::now().timestamp_millis(),
         )?;
+        let reaction_shortcode = event.shortcode.clone().or_else(|| info.shortcode.clone());
+        if info.kind == crate::api::MatrixReactionKeyKind::Custom {
+            if let Some(shortcode) = reaction_shortcode.as_ref() {
+                emoji::record_usage(
+                    config,
+                    &crate::api::MatrixCustomEmojiUsageRequest {
+                        emoji: vec![crate::api::MatrixCustomEmojiRef {
+                            shortcode: shortcode.clone(),
+                            mxc_url: info.normalized.clone(),
+                        }],
+                        room_id: Some(room_id.clone()),
+                        observed_at_ms: Some(Utc::now().timestamp_millis()),
+                    },
+                )?;
+            }
+        }
         let summary = summaries
             .entry(info.normalized.clone())
             .or_insert(MatrixReactionSummary {
                 key: info.raw.clone(),
                 normalized_key: info.normalized.clone(),
-                display: info.display.clone(),
+                display: reaction_shortcode
+                    .clone()
+                    .unwrap_or_else(|| info.display.clone()),
                 kind: info.kind,
-                shortcode: info.shortcode.clone(),
+                shortcode: reaction_shortcode.clone(),
                 count: 0,
                 users: Vec::new(),
                 raw_keys: Vec::new(),
             });
         summary.count += 1;
+        if summary.shortcode.is_none() && reaction_shortcode.is_some() {
+            summary.shortcode = reaction_shortcode.clone();
+            summary.display = reaction_shortcode
+                .clone()
+                .unwrap_or_else(|| info.display.clone());
+        }
         if !summary.users.iter().any(|user| user == &event.sender_id) {
             summary.users.push(event.sender_id.clone());
         }
@@ -1255,36 +1372,40 @@ async fn fetch_reaction_events(
         let value: Value = raw.deserialize_as_unchecked().map_err(|err| {
             MatrixError::State(format!("failed to decode reaction payload: {err}"))
         })?;
-        let key = value
-            .get("m.relates_to")
-            .and_then(|value| value.get("key"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let sender_id = value
-            .get("sender")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let event_id = value
-            .get("event_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let (Some(key), Some(sender_id), Some(event_id)) = (key, sender_id, event_id) else {
+        let Some(event) = decode_reaction_event(&value) else {
             continue;
         };
-        output.push(MatrixReactionEvent {
-            event_id,
-            sender_id,
-            key,
-        });
+        output.push(event);
     }
 
     Ok(output)
 }
 
+fn decode_reaction_event(value: &Value) -> Option<MatrixReactionEvent> {
+    let content = value.get("content")?;
+    let key = content
+        .get("m.relates_to")
+        .and_then(|value| value.get("key"))
+        .and_then(Value::as_str)
+        .map(str::to_string)?;
+    let sender_id = value
+        .get("sender")
+        .and_then(Value::as_str)
+        .map(str::to_string)?;
+    let event_id = value
+        .get("event_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)?;
+    Some(MatrixReactionEvent {
+        event_id,
+        sender_id,
+        key,
+        shortcode: reactions::read_reaction_shortcode(content),
+    })
+}
+
 fn reaction_key_matches(key: &str, info: &crate::api::MatrixReactionInfo) -> bool {
-    key == info.raw
-        || key == info.normalized
-        || info.shortcode.as_deref() == Some(key)
+    key == info.raw || key == info.normalized || info.shortcode.as_deref() == Some(key)
 }
 
 async fn build_client(config: &MatrixClientConfig) -> MatrixResult<Client> {
@@ -1309,8 +1430,8 @@ fn install_session_callbacks(client: &Client, config: &MatrixClientConfig) -> Ma
     let reload_config = config.clone();
     client.set_session_callbacks(
         Box::new(move |_client| {
-            let Some(stored) = session::load_session(&reload_config)
-                .map_err(session_callback_error)?
+            let Some(stored) =
+                session::load_session(&reload_config).map_err(session_callback_error)?
             else {
                 return Err(session_callback_error(MatrixError::State(
                     "persisted matrix session is unavailable".to_string(),
@@ -1322,8 +1443,9 @@ fn install_session_callbacks(client: &Client, config: &MatrixClientConfig) -> Ma
             })
         }),
         Box::new(move |client| {
-            let previous = state::read_json::<StoredSession>(&save_config.state_layout.session_file)
-                .map_err(session_callback_error)?;
+            let previous =
+                state::read_json::<StoredSession>(&save_config.state_layout.session_file)
+                    .map_err(session_callback_error)?;
             session::persist_client_session(&save_config, &client, previous.as_ref(), None)
                 .map(|_| ())
                 .map_err(session_callback_error)
@@ -1332,9 +1454,7 @@ fn install_session_callbacks(client: &Client, config: &MatrixClientConfig) -> Ma
     Ok(())
 }
 
-fn session_callback_error(
-    err: impl std::fmt::Display,
-) -> Box<dyn std::error::Error + Send + Sync> {
+fn session_callback_error(err: impl std::fmt::Display) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::other(err.to_string()))
 }
 
@@ -1351,12 +1471,19 @@ async fn restore_or_login(
                     NativeLifecycleStage::RestoreOrLogin,
                     format!("restored persisted session for {}", stored.user_id),
                 );
-                return session::persist_client_session(config, client, Some(stored), stored.sync_token.clone());
+                return session::persist_client_session(
+                    config,
+                    client,
+                    Some(stored),
+                    stored.sync_token.clone(),
+                );
             }
             Err(err) => {
                 shared.push_lifecycle(
                     NativeLifecycleStage::RestoreOrLogin,
-                    format!("persisted session restore failed, falling back to password login: {err}"),
+                    format!(
+                        "persisted session restore failed, falling back to password login: {err}"
+                    ),
                 );
             }
         }
@@ -1364,12 +1491,10 @@ async fn restore_or_login(
 
     let password = match &config.auth {
         MatrixAuthConfig::Password { password } => password,
-        MatrixAuthConfig::AccessToken { .. } => {
-            return Err(MatrixError::State(
-                "fresh startup requires password auth; access-token-only bootstrap is not supported"
-                    .to_string(),
-            ))
-        }
+        MatrixAuthConfig::AccessToken { .. } => return Err(MatrixError::State(
+            "fresh startup requires password auth; access-token-only bootstrap is not supported"
+                .to_string(),
+        )),
     };
 
     login_with_password(client, config, existing_session, password, shared).await
@@ -1382,7 +1507,9 @@ async fn login_with_password(
     password: &str,
     shared: &Arc<SharedState>,
 ) -> MatrixResult<StoredSession> {
-    let mut login = client.matrix_auth().login_username(&config.user_id, password);
+    let mut login = client
+        .matrix_auth()
+        .login_username(&config.user_id, password);
     if let Some(existing_session) = existing_session {
         login = login.device_id(&existing_session.device_id);
     }
@@ -1457,8 +1584,11 @@ async fn run_sync_loop(
     let mut sync_token = Some(initial_sync_token);
 
     loop {
-        let settings =
-            sync::build_settings(sync_token.clone(), config.initial_sync_limit, Duration::from_secs(30));
+        let settings = sync::build_settings(
+            sync_token.clone(),
+            config.initial_sync_limit,
+            Duration::from_secs(30),
+        );
         let sync_result = tokio::select! {
             _ = wait_for_stop(&mut stop_rx) => break,
             result = client.sync_once(settings) => result,
@@ -1557,10 +1687,12 @@ async fn recover_sync_client(
         reauthenticate_client(config, shared, Some(current_client.clone()), stored_session).await?;
     let replacement_sync_token =
         initial_sync(&replacement_client, config, &replacement_session, shared).await?;
-    register_inbound_handler(&replacement_client, shared.clone());
+    register_inbound_handler(&replacement_client, shared.clone(), config.clone());
 
     let old_client = {
-        let mut slot = client_slot.lock().expect("matrix client slot mutex poisoned");
+        let mut slot = client_slot
+            .lock()
+            .expect("matrix client slot mutex poisoned");
         slot.replace(replacement_client.clone())
     };
     if let Some(old_client) = old_client {
@@ -1569,7 +1701,11 @@ async fn recover_sync_client(
         drop(current_client.clone());
     }
 
-    Ok((replacement_client, replacement_session, replacement_sync_token))
+    Ok((
+        replacement_client,
+        replacement_session,
+        replacement_sync_token,
+    ))
 }
 
 async fn recover_startup_client(
@@ -1583,7 +1719,11 @@ async fn recover_startup_client(
     let replacement_sync_token =
         initial_sync(&replacement_client, config, &replacement_session, shared).await?;
 
-    Ok((replacement_client, replacement_session, replacement_sync_token))
+    Ok((
+        replacement_client,
+        replacement_session,
+        replacement_sync_token,
+    ))
 }
 
 async fn reauthenticate_client(
@@ -1596,7 +1736,8 @@ async fn reauthenticate_client(
         MatrixAuthConfig::Password { password } => password.as_str(),
         MatrixAuthConfig::AccessToken { .. } => {
             return Err(MatrixError::State(
-                "matrix session expired and no password auth is configured for recovery".to_string(),
+                "matrix session expired and no password auth is configured for recovery"
+                    .to_string(),
             ))
         }
     };
@@ -1613,11 +1754,20 @@ async fn reauthenticate_client(
 
     let replacement_client = build_client(config).await?;
     install_session_callbacks(&replacement_client, config)?;
-    let replacement_session =
-        login_with_password(&replacement_client, config, Some(stored_session), password, shared).await?;
+    let replacement_session = login_with_password(
+        &replacement_client,
+        config,
+        Some(stored_session),
+        password,
+        shared,
+    )
+    .await?;
     shared.push_lifecycle(
         NativeLifecycleStage::PersistSession,
-        format!("persisted matrix session at {}", config.state_layout.session_file),
+        format!(
+            "persisted matrix session at {}",
+            config.state_layout.session_file
+        ),
     );
     Ok((replacement_client, replacement_session))
 }
@@ -1638,17 +1788,22 @@ async fn wait_for_stop(stop_rx: &mut watch::Receiver<bool>) {
 mod tests {
     use std::{fs, path::PathBuf, time::Duration};
 
+    use serde_json::json;
     use tokio::runtime::Runtime;
     use uuid::Uuid;
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
         matchers::{body_partial_json, header, method, path, query_param},
+        Mock, MockServer, ResponseTemplate,
     };
 
     use crate::{
-        api::{MatrixAuthConfig, MatrixClientConfig, MatrixStateLayout, MatrixSyncState, StoredSession},
+        api::{
+            MatrixAuthConfig, MatrixClientConfig, MatrixStateLayout, MatrixSyncState, StoredSession,
+        },
         client::MatrixCoreService,
     };
+
+    use super::decode_reaction_event;
 
     fn unique_root() -> PathBuf {
         std::env::temp_dir().join(format!("openclaw-matrix-rust-{}", Uuid::new_v4()))
@@ -1805,6 +1960,26 @@ mod tests {
     }
 
     #[test]
+    fn decodes_reaction_shortcode_metadata_from_content() {
+        let event = decode_reaction_event(&json!({
+            "event_id": "$reaction",
+            "sender": "@user:example.org",
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$message",
+                    "key": "mxc://example.org/blobwave",
+                    "org.matrix.msc4027.shortcode": "blobwave"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(event.key, "mxc://example.org/blobwave");
+        assert_eq!(event.shortcode.as_deref(), Some(":blobwave:"));
+    }
+
+    #[test]
     fn reuses_device_across_restart() {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
@@ -1833,10 +2008,27 @@ mod tests {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
         let server = runtime.block_on(MockServer::start());
-        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 300000, 1));
-        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 300000, 2));
+        runtime.block_on(mount_login_response(
+            &server,
+            "token-1",
+            "refresh-1",
+            300000,
+            1,
+        ));
+        runtime.block_on(mount_login_response(
+            &server,
+            "token-2",
+            "refresh-2",
+            300000,
+            2,
+        ));
         runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
-        runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
+        runtime.block_on(mount_sync_for_token(
+            &server,
+            "token-2",
+            Some("next-1"),
+            "next-2",
+        ));
         runtime.block_on(async {
             Mock::given(method("GET"))
                 .and(path("/_matrix/client/v3/sync"))
@@ -1929,7 +2121,13 @@ mod tests {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
         let server = runtime.block_on(MockServer::start());
-        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 300000, 1));
+        runtime.block_on(mount_login_response(
+            &server,
+            "token-1",
+            "refresh-1",
+            300000,
+            1,
+        ));
         runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
 
         let config = sample_config(&root, &server.uri());
@@ -1939,7 +2137,13 @@ mod tests {
 
         assert_eq!(first_diagnostics.sync_state, MatrixSyncState::Ready);
 
-        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 300000, 2));
+        runtime.block_on(mount_login_response(
+            &server,
+            "token-2",
+            "refresh-2",
+            300000,
+            2,
+        ));
         runtime.block_on(async {
             Mock::given(method("GET"))
                 .and(path("/_matrix/client/v3/sync"))
@@ -2006,7 +2210,13 @@ mod tests {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
         let server = runtime.block_on(MockServer::start());
-        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 300000, 1));
+        runtime.block_on(mount_login_response(
+            &server,
+            "token-1",
+            "refresh-1",
+            300000,
+            1,
+        ));
         runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
         runtime.block_on(async {
             Mock::given(method("GET"))
@@ -2031,7 +2241,12 @@ mod tests {
             300000,
             1,
         ));
-        runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
+        runtime.block_on(mount_sync_for_token(
+            &server,
+            "token-2",
+            Some("next-1"),
+            "next-2",
+        ));
         runtime.block_on(async {
             Mock::given(method("GET"))
                 .and(path("/_matrix/client/v3/sync"))
