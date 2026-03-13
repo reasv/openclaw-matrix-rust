@@ -7,23 +7,34 @@ use std::{
 use chrono::Utc;
 use matrix_sdk::{
     Client,
+    Room,
+    RoomState,
     SessionChange,
     config::RequestConfig,
     encryption::EncryptionSettings,
-    ruma::{OwnedRoomId, events::room::message::RoomMessageEventContent},
+    ruma::{
+        OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomOrAliasId, RoomId, UserId,
+        events::room::message::{
+            OriginalSyncRoomMessageEvent, RoomMessageEventContent,
+            RoomMessageEventContentWithoutRelation,
+        },
+    },
 };
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 
 use crate::{
     api::{
-        MatrixAuthConfig, MatrixClientConfig, MatrixCustomEmojiUsageRequest, MatrixDiagnostics,
-        MatrixKeyBackupState, MatrixListEmojiRequest, MatrixListReactionsRequest,
-        MatrixNativeEvent, MatrixReactRequest, MatrixReactResult, MatrixReactionSummary,
-        MatrixSendRequest, MatrixSendResult, MatrixSyncState, MatrixVerificationState,
-        NativeLifecycleStage, StoredSession,
+        MatrixAuthConfig, MatrixChannelInfo, MatrixChannelInfoRequest, MatrixClientConfig,
+        MatrixCustomEmojiUsageRequest, MatrixDiagnostics, MatrixDownloadMediaRequest,
+        MatrixDownloadMediaResult, MatrixJoinRequest, MatrixJoinResult, MatrixKeyBackupState,
+        MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMemberInfo,
+        MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
+        MatrixReactionSummary, MatrixResolveTargetRequest, MatrixResolveTargetResult,
+        MatrixSendRequest, MatrixSendResult, MatrixSyncState, MatrixUploadMediaRequest,
+        MatrixUploadMediaResult, MatrixVerificationState, NativeLifecycleStage, StoredSession,
     },
     auth::session,
-    crypto, emoji, reactions, state, sync, MatrixError, MatrixResult,
+    crypto, emoji, events, media, reactions, state, sync, MatrixError, MatrixResult,
 };
 
 struct SharedState {
@@ -94,6 +105,13 @@ impl SharedState {
                 detail: detail.into(),
                 at: Utc::now(),
             });
+    }
+
+    fn push_inbound(&self, event: crate::api::MatrixInboundEvent) {
+        self.events
+            .lock()
+            .expect("matrix event queue mutex poisoned")
+            .push_back(MatrixNativeEvent::Inbound { event });
     }
 
     fn set_sync_state(&self, state: MatrixSyncState) {
@@ -219,6 +237,8 @@ impl MatrixCoreService {
             }
         };
 
+        register_inbound_handler(&client, self.shared.clone());
+
         let (stop_tx, stop_rx) = watch::channel(false);
         let session_task = self.runtime.spawn(run_session_persist_loop(
             client.clone(),
@@ -276,20 +296,16 @@ impl MatrixCoreService {
         if !self.running {
             return Err(MatrixError::State("client is not running".to_string()));
         }
-        if request.room_id.trim().is_empty() {
-            return Err(MatrixError::State("room_id is required".to_string()));
-        }
-
-        let client = self
-            .client
-            .as_ref()
-            .ok_or_else(|| MatrixError::State("client is not initialized".to_string()))?
-            .clone();
-        let room_id: OwnedRoomId = request.room_id.parse()?;
-        let room = client
-            .get_room(&room_id)
-            .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
-        let content = RoomMessageEventContent::text_plain(request.text.clone());
+        let client = self.client()?;
+        let (room, resolved_target) = self
+            .runtime
+            .block_on(resolve_room_for_send(&client, &request.room_id))?;
+        let content = self.runtime.block_on(build_message_content(
+            &room,
+            request.text.clone(),
+            request.reply_to_id.as_deref(),
+            request.thread_id.as_deref(),
+        ))?;
         let response = self.runtime.block_on(async { room.send(content).await })?;
         let now = Utc::now();
 
@@ -301,7 +317,7 @@ impl MatrixCoreService {
             .lock()
             .expect("matrix event queue mutex poisoned")
             .push_back(MatrixNativeEvent::Outbound {
-                room_id: request.room_id.clone(),
+                room_id: resolved_target.resolved_room_id.clone(),
                 message_id: response.event_id.to_string(),
                 thread_id: request.thread_id.clone(),
                 reply_to_id: request.reply_to_id.clone(),
@@ -309,10 +325,87 @@ impl MatrixCoreService {
             });
 
         Ok(MatrixSendResult {
-            room_id: request.room_id,
+            room_id: resolved_target.resolved_room_id,
             message_id: response.event_id.to_string(),
             thread_id: request.thread_id,
         })
+    }
+
+    pub fn resolve_target(
+        &self,
+        request: MatrixResolveTargetRequest,
+    ) -> MatrixResult<MatrixResolveTargetResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(resolve_target_internal(
+            &client,
+            &request.target,
+            request.create_dm.unwrap_or(true),
+        ))
+    }
+
+    pub fn join_room(&mut self, request: MatrixJoinRequest) -> MatrixResult<MatrixJoinResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        let result = self.runtime.block_on(join_room_internal(&client, &request.target))?;
+        Ok(result)
+    }
+
+    pub fn member_info(&self, request: MatrixMemberInfoRequest) -> MatrixResult<MatrixMemberInfo> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime
+            .block_on(member_info_internal(&client, &request.room_id, &request.user_id))
+    }
+
+    pub fn channel_info(
+        &self,
+        request: MatrixChannelInfoRequest,
+    ) -> MatrixResult<MatrixChannelInfo> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime
+            .block_on(channel_info_internal(&client, &request.room_id))
+    }
+
+    pub fn upload_media(
+        &mut self,
+        request: MatrixUploadMediaRequest,
+    ) -> MatrixResult<MatrixUploadMediaResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        let (room, resolved_target) = self
+            .runtime
+            .block_on(resolve_room_for_send(&client, &request.room_id))?;
+        let message_id = self.runtime.block_on(media::upload_media(&room, &request))?;
+        Ok(MatrixUploadMediaResult {
+            room_id: resolved_target.resolved_room_id,
+            message_id,
+            filename: request.filename,
+            content_type: request.content_type,
+        })
+    }
+
+    pub fn download_media(
+        &self,
+        request: MatrixDownloadMediaRequest,
+    ) -> MatrixResult<MatrixDownloadMediaResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime
+            .block_on(download_media_internal(&client, &request.room_id, &request.event_id))
     }
 
     pub fn react_message(&mut self, request: MatrixReactRequest) -> MatrixResult<MatrixReactResult> {
@@ -369,6 +462,275 @@ impl MatrixCoreService {
             drop(client);
         });
     }
+
+    fn client(&self) -> MatrixResult<Client> {
+        self.client
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| MatrixError::State("client is not initialized".to_string()))
+    }
+}
+
+fn register_inbound_handler(client: &Client, shared: Arc<SharedState>) {
+    client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
+        let shared = shared.clone();
+        async move {
+            if let Some(inbound) = events::normalize_inbound_event(&room, &event).await {
+                let now = Utc::now();
+                shared.update_diagnostics(|diagnostics| {
+                    diagnostics.last_successful_decryption_at = Some(now);
+                });
+                shared.push_inbound(inbound);
+            }
+        }
+    });
+}
+
+fn normalize_target(raw: &str) -> MatrixResult<String> {
+    let mut value = raw.trim().to_string();
+    if value.is_empty() {
+        return Err(MatrixError::State("matrix target is required".to_string()));
+    }
+
+    loop {
+        let lowered = value.to_ascii_lowercase();
+        let stripped = if lowered.starts_with("matrix:") {
+            Some(value["matrix:".len()..].trim().to_string())
+        } else if lowered.starts_with("room:") {
+            Some(value["room:".len()..].trim().to_string())
+        } else if lowered.starts_with("channel:") {
+            Some(value["channel:".len()..].trim().to_string())
+        } else {
+            None
+        };
+
+        match stripped {
+            Some(next) if !next.is_empty() => value = next,
+            Some(_) => return Err(MatrixError::State("matrix target is required".to_string())),
+            None => break,
+        }
+    }
+
+    let lowered = value.to_ascii_lowercase();
+    if lowered.starts_with("user:") {
+        let user = value["user:".len()..].trim();
+        if user.is_empty() {
+            return Err(MatrixError::State("matrix user target is required".to_string()));
+        }
+        return Ok(if user.starts_with('@') {
+            user.to_string()
+        } else {
+            format!("@{user}")
+        });
+    }
+
+    Ok(value)
+}
+
+async fn resolve_target_internal(
+    client: &Client,
+    target: &str,
+    create_dm: bool,
+) -> MatrixResult<MatrixResolveTargetResult> {
+    let normalized = normalize_target(target)?;
+
+    if normalized.starts_with('@') {
+        let user_id: OwnedUserId = UserId::parse(normalized.as_str())?.to_owned();
+        let room = if let Some(room) = client.get_dm_room(&user_id) {
+            room
+        } else if create_dm {
+            client.create_dm(&user_id).await?
+        } else {
+            return Err(MatrixError::State(format!(
+                "no direct room found for {user_id}"
+            )));
+        };
+
+        return Ok(MatrixResolveTargetResult {
+            input: target.to_string(),
+            resolved_room_id: room.room_id().to_string(),
+            canonical_target: user_id.to_string(),
+            is_direct: true,
+            room_alias: room.canonical_alias().map(|value| value.to_string()),
+        });
+    }
+
+    if normalized.starts_with('#') {
+        let alias = RoomAliasId::parse(normalized.as_str())?.to_owned();
+        let response = client.resolve_room_alias(&alias).await?;
+        let room = client.get_room(&response.room_id);
+        let is_direct = match room.as_ref() {
+            Some(room) => room.is_direct().await.unwrap_or(false),
+            None => false,
+        };
+        let room_alias = room
+            .as_ref()
+            .and_then(|value| value.canonical_alias().map(|alias| alias.to_string()))
+            .or_else(|| Some(alias.to_string()));
+        return Ok(MatrixResolveTargetResult {
+            input: target.to_string(),
+            resolved_room_id: response.room_id.to_string(),
+            canonical_target: alias.to_string(),
+            is_direct,
+            room_alias,
+        });
+    }
+
+    let room_id: OwnedRoomId = RoomId::parse(normalized.as_str())?.to_owned();
+    let room = client.get_room(&room_id);
+    let is_direct = match room.as_ref() {
+        Some(room) => room.is_direct().await.unwrap_or(false),
+        None => false,
+    };
+    Ok(MatrixResolveTargetResult {
+        input: target.to_string(),
+        resolved_room_id: room_id.to_string(),
+        canonical_target: room_id.to_string(),
+        is_direct,
+        room_alias: room
+            .as_ref()
+            .and_then(|value| value.canonical_alias().map(|alias| alias.to_string())),
+    })
+}
+
+async fn resolve_room_for_send(
+    client: &Client,
+    target: &str,
+) -> MatrixResult<(Room, MatrixResolveTargetResult)> {
+    let resolved = resolve_target_internal(client, target, true).await?;
+    let room_id: OwnedRoomId = RoomId::parse(resolved.resolved_room_id.as_str())?.to_owned();
+
+    if let Some(room) = client.get_room(&room_id) {
+        if room.state() == RoomState::Joined {
+            return Ok((room, resolved));
+        }
+    }
+
+    let normalized = normalize_target(target)?;
+    if normalized.starts_with('@') {
+        let room = client
+            .get_room(&room_id)
+            .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+        return Ok((room, resolved));
+    }
+
+    let room_or_alias: OwnedRoomOrAliasId = RoomOrAliasId::parse(normalized.as_str())?.to_owned();
+    let room = client.join_room_by_id_or_alias(&room_or_alias, &[]).await?;
+    Ok((room, resolved))
+}
+
+async fn build_message_content(
+    room: &Room,
+    text: String,
+    reply_to_id: Option<&str>,
+    thread_id: Option<&str>,
+) -> MatrixResult<RoomMessageEventContent> {
+    let reply = media::build_reply(reply_to_id, thread_id)?;
+    if let Some(reply) = reply {
+        let base = RoomMessageEventContentWithoutRelation::text_plain(text);
+        return room
+            .make_reply_event(base, reply)
+            .await
+            .map_err(|err| MatrixError::State(format!("failed to build reply metadata: {err}")));
+    }
+    Ok(RoomMessageEventContent::text_plain(text))
+}
+
+async fn join_room_internal(client: &Client, target: &str) -> MatrixResult<MatrixJoinResult> {
+    let normalized = normalize_target(target)?;
+    if normalized.starts_with('@') {
+        let resolved = resolve_target_internal(client, target, true).await?;
+        return Ok(MatrixJoinResult {
+            room_id: resolved.resolved_room_id,
+            joined: true,
+        });
+    }
+
+    let room_or_alias: OwnedRoomOrAliasId = RoomOrAliasId::parse(normalized.as_str())?.to_owned();
+    let room_id_before = if normalized.starts_with('!') {
+        Some(RoomId::parse(normalized.as_str())?.to_owned())
+    } else {
+        None
+    };
+    if let Some(room_id) = room_id_before.as_ref() {
+        if let Some(room) = client.get_room(room_id) {
+            if room.state() == RoomState::Joined {
+                return Ok(MatrixJoinResult {
+                    room_id: room.room_id().to_string(),
+                    joined: true,
+                });
+            }
+        }
+    }
+
+    let room = client.join_room_by_id_or_alias(&room_or_alias, &[]).await?;
+    Ok(MatrixJoinResult {
+        room_id: room.room_id().to_string(),
+        joined: room.state() == RoomState::Joined,
+    })
+}
+
+async fn member_info_internal(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+) -> MatrixResult<MatrixMemberInfo> {
+    let room_id: OwnedRoomId = RoomId::parse(room_id.trim())?.to_owned();
+    let user_id: OwnedUserId = UserId::parse(user_id.trim())?.to_owned();
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+    let member = room.get_member(&user_id).await?;
+    let self_user_id = client
+        .user_id()
+        .ok_or_else(|| MatrixError::State("matrix session is unavailable".to_string()))?;
+
+    Ok(MatrixMemberInfo {
+        room_id: room.room_id().to_string(),
+        user_id: user_id.to_string(),
+        display_name: member.as_ref().map(|value| value.name().to_string()),
+        avatar_url: member
+            .as_ref()
+            .and_then(|value| value.avatar_url().map(|avatar| avatar.to_string())),
+        membership: member
+            .as_ref()
+            .map(|value| format!("{:?}", value.membership()).to_lowercase()),
+        is_self: user_id == self_user_id,
+        is_direct: room.is_direct().await.unwrap_or(false),
+    })
+}
+
+async fn channel_info_internal(
+    client: &Client,
+    room_id: &str,
+) -> MatrixResult<MatrixChannelInfo> {
+    let room_id: OwnedRoomId = RoomId::parse(room_id.trim())?.to_owned();
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+
+    Ok(MatrixChannelInfo {
+        room_id: room.room_id().to_string(),
+        display_name: room.display_name().await.ok().map(|value| value.to_string()),
+        canonical_alias: room.canonical_alias().map(|value| value.to_string()),
+        alt_aliases: room.alt_aliases().into_iter().map(|value| value.to_string()).collect(),
+        joined: room.state() == RoomState::Joined,
+        is_direct: room.is_direct().await.unwrap_or(false),
+        member_count: Some(room.clone_info().active_members_count() as u64),
+    })
+}
+
+async fn download_media_internal(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> MatrixResult<MatrixDownloadMediaResult> {
+    let room_id: OwnedRoomId = RoomId::parse(room_id.trim())?.to_owned();
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id.trim())?;
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+    media::download_media(client, &room, &event_id).await
 }
 
 async fn build_client(config: &MatrixClientConfig) -> MatrixResult<Client> {

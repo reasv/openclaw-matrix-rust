@@ -73,6 +73,23 @@ pub enum MatrixKeyBackupState {
     Enabled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatrixChatType {
+    Direct,
+    Channel,
+    Thread,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatrixMediaKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixDiagnostics {
@@ -119,6 +136,38 @@ pub enum MatrixNativeEvent {
         reply_to_id: Option<String>,
         at: DateTime<Utc>,
     },
+    Inbound {
+        event: MatrixInboundEvent,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixInboundMedia {
+    pub index: usize,
+    pub kind: MatrixMediaKind,
+    pub body: Option<String>,
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixInboundEvent {
+    pub room_id: String,
+    pub event_id: String,
+    pub sender_id: String,
+    pub sender_name: Option<String>,
+    pub room_name: Option<String>,
+    pub room_alias: Option<String>,
+    pub chat_type: MatrixChatType,
+    pub body: String,
+    pub formatted_body: Option<String>,
+    pub reply_to_id: Option<String>,
+    pub thread_root_id: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub media: Vec<MatrixInboundMedia>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +185,113 @@ pub struct MatrixSendResult {
     pub room_id: String,
     pub message_id: String,
     pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixResolveTargetRequest {
+    pub target: String,
+    pub create_dm: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixResolveTargetResult {
+    pub input: String,
+    pub resolved_room_id: String,
+    pub canonical_target: String,
+    pub is_direct: bool,
+    pub room_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixJoinRequest {
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixJoinResult {
+    pub room_id: String,
+    pub joined: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixMemberInfoRequest {
+    pub room_id: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixMemberInfo {
+    pub room_id: String,
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub membership: Option<String>,
+    pub is_self: bool,
+    pub is_direct: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixChannelInfoRequest {
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixChannelInfo {
+    pub room_id: String,
+    pub display_name: Option<String>,
+    pub canonical_alias: Option<String>,
+    pub alt_aliases: Vec<String>,
+    pub joined: bool,
+    pub is_direct: bool,
+    pub member_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixUploadMediaRequest {
+    pub room_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub data_base64: String,
+    pub caption: Option<String>,
+    pub reply_to_id: Option<String>,
+    pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixUploadMediaResult {
+    pub room_id: String,
+    pub message_id: String,
+    pub filename: String,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixDownloadMediaRequest {
+    pub room_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixDownloadMediaResult {
+    pub room_id: String,
+    pub event_id: String,
+    pub kind: MatrixMediaKind,
+    pub body: Option<String>,
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

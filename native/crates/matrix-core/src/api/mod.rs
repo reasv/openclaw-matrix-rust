@@ -1,10 +1,15 @@
 pub mod types;
 
 pub use types::{
-    MatrixAuthConfig, MatrixClientConfig, MatrixCustomEmojiCatalogEntry, MatrixCustomEmojiRef,
+    MatrixAuthConfig, MatrixChannelInfo, MatrixChannelInfoRequest, MatrixChatType,
+    MatrixClientConfig, MatrixCustomEmojiCatalogEntry, MatrixCustomEmojiRef,
     MatrixCustomEmojiRoomStats, MatrixCustomEmojiUsageRequest, MatrixDiagnostics,
-    MatrixKeyBackupState, MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixNativeEvent,
-    MatrixReactRequest, MatrixReactResult, MatrixReactionInfo, MatrixReactionKeyKind,
-    MatrixReactionSummary, MatrixSendRequest, MatrixSendResult, MatrixStateLayout,
-    MatrixSyncState, MatrixVerificationState, NativeLifecycleStage, StoredSession,
+    MatrixDownloadMediaRequest, MatrixDownloadMediaResult, MatrixInboundEvent,
+    MatrixInboundMedia, MatrixJoinRequest, MatrixJoinResult, MatrixKeyBackupState,
+    MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMediaKind, MatrixMemberInfo,
+    MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
+    MatrixReactionInfo, MatrixReactionKeyKind, MatrixReactionSummary, MatrixResolveTargetRequest,
+    MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixStateLayout,
+    MatrixSyncState, MatrixUploadMediaRequest, MatrixUploadMediaResult,
+    MatrixVerificationState, NativeLifecycleStage, StoredSession,
 };

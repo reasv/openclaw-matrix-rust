@@ -18,8 +18,10 @@ use thiserror::Error;
 
 use crate::{
     api::{
-        MatrixClientConfig, MatrixCustomEmojiUsageRequest, MatrixListEmojiRequest,
-        MatrixListReactionsRequest, MatrixReactRequest, MatrixSendRequest,
+        MatrixChannelInfoRequest, MatrixClientConfig, MatrixCustomEmojiUsageRequest,
+        MatrixDownloadMediaRequest, MatrixJoinRequest, MatrixListEmojiRequest,
+        MatrixListReactionsRequest, MatrixMemberInfoRequest, MatrixReactRequest,
+        MatrixResolveTargetRequest, MatrixSendRequest, MatrixUploadMediaRequest,
     },
     client::MatrixCoreService,
 };
@@ -36,6 +38,8 @@ enum MatrixError {
     Serde(#[from] serde_json::Error),
     #[error(transparent)]
     MatrixSdk(#[from] matrix_sdk::Error),
+    #[error(transparent)]
+    Http(#[from] matrix_sdk::HttpError),
     #[error(transparent)]
     MatrixBuild(#[from] matrix_sdk::ClientBuildError),
     #[error(transparent)]
@@ -98,6 +102,60 @@ impl MatrixCoreClient {
             serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
         let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
         let result = inner.send_message(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "resolveTarget")]
+    pub fn resolve_target(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixResolveTargetRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.resolve_target(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "joinRoom")]
+    pub fn join_room(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixJoinRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.join_room(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "memberInfo")]
+    pub fn member_info(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixMemberInfoRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.member_info(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "channelInfo")]
+    pub fn channel_info(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixChannelInfoRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.channel_info(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "uploadMedia")]
+    pub fn upload_media(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixUploadMediaRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.upload_media(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "downloadMedia")]
+    pub fn download_media(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixDownloadMediaRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.download_media(request).map_err(to_napi_error)?;
         serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
     }
 

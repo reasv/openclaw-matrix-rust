@@ -8,8 +8,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.98"
+base64 = "0.22.1"
 chrono = { version = "0.4.41", features = ["clock", "serde"] }
 matrix-sdk = { version = "0.16.0", default-features = false, features = ["bundled-sqlite", "e2e-encryption", "sqlite", "rustls-tls"] }
+mime = "0.3.17"
 napi = { version = "2.16.17", default-features = false, features = ["napi8"] }
 napi-derive = "2.16.13"
 serde = { version = "1.0.219", features = ["derive"] }
