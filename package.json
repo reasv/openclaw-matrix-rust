@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm build:native && pnpm typecheck && pnpm test",
     "build:native": "napi build --platform --cargo-cwd native/crates/matrix-core --js-package-name @openclaw/matrix-rust npm",
+    "probe:emoji": "node --import tsx scripts/probe-custom-emoji.ts",
     "test": "cargo test --manifest-path native/Cargo.toml && node --import tsx --test src/*.test.ts src/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
