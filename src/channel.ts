@@ -296,7 +296,16 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         messageId: result.messageId,
       };
     },
-    sendMedia: async ({ cfg, to, mediaUrl, text, replyToId, threadId, accountId }) => {
+    sendMedia: async ({
+      cfg,
+      to,
+      mediaUrl,
+      text,
+      mediaLocalRoots,
+      replyToId,
+      threadId,
+      accountId,
+    }) => {
       const account = resolveMatrixRustAccount({
         cfg: cfg as CoreConfig,
         accountId,
@@ -308,6 +317,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         to,
         mediaUrl,
         text: text ?? undefined,
+        mediaLocalRoots,
         replyToId: replyToId ?? undefined,
         threadId: threadId == null ? undefined : String(threadId),
       });

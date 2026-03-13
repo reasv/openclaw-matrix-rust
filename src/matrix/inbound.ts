@@ -507,9 +507,10 @@ async function recordInboundEmojiUsage(params: {
 async function loadOutboundMedia(params: {
   mediaUrl: string;
   maxBytes: number;
+  mediaLocalRoots?: readonly string[];
   runtime: any;
 }): Promise<{ buffer: Buffer; contentType?: string; fileName?: string }> {
-  const { mediaUrl, maxBytes, runtime } = params;
+  const { mediaUrl, maxBytes, mediaLocalRoots, runtime } = params;
   if (/^https?:\/\//i.test(mediaUrl)) {
     const loaded = await runtime.channel.media.fetchRemoteMedia({
       url: mediaUrl,
@@ -522,7 +523,10 @@ async function loadOutboundMedia(params: {
     };
   }
 
-  const loaded = await runtime.media.loadWebMedia(mediaUrl, { maxBytes });
+  const loaded = await runtime.media.loadWebMedia(mediaUrl, {
+    maxBytes,
+    localRoots: mediaLocalRoots,
+  });
   return {
     buffer: Buffer.from(loaded.buffer),
     contentType: loaded.contentType,
@@ -536,6 +540,7 @@ export async function sendMatrixMedia(params: {
   to: string;
   mediaUrl: string;
   text?: string;
+  mediaLocalRoots?: readonly string[];
   replyToId?: string;
   threadId?: string;
 }): Promise<{ channel: "matrix"; to: string; messageId: string }> {
@@ -544,6 +549,7 @@ export async function sendMatrixMedia(params: {
   const loaded = await loadOutboundMedia({
     mediaUrl: params.mediaUrl,
     maxBytes,
+    mediaLocalRoots: params.mediaLocalRoots,
     runtime,
   });
   const result = params.client.uploadMedia({

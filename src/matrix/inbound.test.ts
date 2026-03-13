@@ -8,6 +8,7 @@ import {
   resolveMatrixReplyContext,
   resolveMatrixThreadContext,
   resolveGroupPolicy,
+  sendMatrixMedia,
 } from "./inbound.js";
 import {
   buildMatrixEnrichedBodyText,
@@ -17,6 +18,25 @@ import {
   resolveMatrixReadableBody,
 } from "./inbound-format.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
+import { setMatrixRustRuntime } from "../runtime.js";
+
+function createResolvedAccount(
+  config: ResolvedMatrixAccount["config"] = {
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+  } as ResolvedMatrixAccount["config"],
+): ResolvedMatrixAccount {
+  return {
+    accountId: "default",
+    enabled: true,
+    configured: true,
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    authMode: "password",
+    config,
+  };
+}
 
 test("extracts custom emoji regardless of attribute order", () => {
   const entries = extractMatrixCustomEmojiUsageFromFormattedBody(
@@ -336,4 +356,154 @@ test("resolves thread starter context for a new thread session", async () => {
     threadLabel: "Matrix thread in Infra",
     parentSessionKey: "agent:main:matrix:channel:!room:example.org",
   });
+});
+
+test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async () => {
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const fetchRemoteMediaCalls: unknown[] = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+
+  setMatrixRustRuntime({
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("local-image"),
+          contentType: "image/png",
+          fileName: "render.png",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async (params: unknown) => {
+          fetchRemoteMediaCalls.push(params);
+          return {
+            buffer: Buffer.from("remote-image"),
+            contentType: "image/png",
+            fileName: "remote.png",
+          };
+        },
+      },
+    },
+  } as any);
+
+  const result = await sendMatrixMedia({
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$media",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+    } as any,
+    to: "!room:example.org",
+    mediaUrl: "/tmp/workspace-agent/out/render.png",
+    mediaLocalRoots: ["/tmp/workspace-agent"],
+    text: "caption",
+  });
+
+  assert.deepEqual(result, {
+    channel: "matrix",
+    to: "!room:example.org",
+    messageId: "$media",
+  });
+  assert.deepEqual(loadWebMediaCalls, [
+    {
+      mediaUrl: "/tmp/workspace-agent/out/render.png",
+      options: {
+        maxBytes: 20 * 1024 * 1024,
+        localRoots: ["/tmp/workspace-agent"],
+      },
+    },
+  ]);
+  assert.deepEqual(fetchRemoteMediaCalls, []);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "render.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("local-image").toString("base64"),
+      caption: "caption",
+      replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
+});
+
+test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async () => {
+  const loadWebMediaCalls: unknown[] = [];
+  const fetchRemoteMediaCalls: Array<Record<string, unknown>> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+
+  setMatrixRustRuntime({
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("unexpected"),
+          contentType: "application/octet-stream",
+          fileName: "unexpected.bin",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async (params: Record<string, unknown>) => {
+          fetchRemoteMediaCalls.push(params);
+          return {
+            buffer: Buffer.from("remote-file"),
+            contentType: "application/pdf",
+            fileName: "report.pdf",
+          };
+        },
+      },
+    },
+  } as any);
+
+  const result = await sendMatrixMedia({
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$file",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+    } as any,
+    to: "!room:example.org",
+    mediaUrl: "https://example.com/report.pdf",
+    mediaLocalRoots: ["/tmp/workspace-agent"],
+  });
+
+  assert.deepEqual(result, {
+    channel: "matrix",
+    to: "!room:example.org",
+    messageId: "$file",
+  });
+  assert.deepEqual(fetchRemoteMediaCalls, [
+    {
+      url: "https://example.com/report.pdf",
+      maxBytes: 20 * 1024 * 1024,
+    },
+  ]);
+  assert.deepEqual(loadWebMediaCalls, []);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "report.pdf",
+      contentType: "application/pdf",
+      dataBase64: Buffer.from("remote-file").toString("base64"),
+      caption: undefined,
+      replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
 });

@@ -67,6 +67,7 @@ declare module "openclaw/plugin-sdk/matrix" {
     action: ChannelMessageActionName;
     params: Record<string, unknown>;
     cfg: OpenClawConfig;
+    mediaLocalRoots?: readonly string[];
     accountId?: string | null;
   };
 
@@ -161,6 +162,7 @@ declare module "openclaw/plugin-sdk/matrix" {
         cfg: OpenClawConfig;
         to: string;
         text: string;
+        mediaLocalRoots?: readonly string[];
         replyToId?: string | null;
         threadId?: string | number | null;
         accountId?: string | null;
@@ -170,6 +172,7 @@ declare module "openclaw/plugin-sdk/matrix" {
         to: string;
         mediaUrl: string;
         text?: string | null;
+        mediaLocalRoots?: readonly string[];
         replyToId?: string | null;
         threadId?: string | number | null;
         accountId?: string | null;
