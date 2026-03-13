@@ -12,6 +12,7 @@ use matrix_sdk::{
     room::{edit::EditedContent, IncludeRelations, MessagesOptions, RelationsOptions},
     ruma::{
         api::Direction,
+        serde::Raw,
         events::room::message::{
             OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation,
@@ -655,9 +656,10 @@ impl MatrixCoreService {
 }
 
 fn register_inbound_handler(client: &Client, shared: Arc<SharedState>, config: MatrixClientConfig) {
+    let message_config = config.clone();
     client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
         let shared = shared.clone();
-        let config = config.clone();
+        let config = message_config.clone();
         async move {
             if let Some(inbound) = events::normalize_inbound_event(&room, &event).await {
                 let emoji = inbound
@@ -681,6 +683,46 @@ fn register_inbound_handler(client: &Client, shared: Arc<SharedState>, config: M
                 });
                 shared.push_inbound(inbound);
             }
+        }
+    });
+
+    let reaction_config = config.clone();
+    client.add_event_handler(move |raw: Raw<AnySyncTimelineEvent>, room: Room| {
+        let config = reaction_config.clone();
+        async move {
+            let Ok(value) = raw.deserialize_as_unchecked::<Value>() else {
+                return;
+            };
+            if value.get("type").and_then(Value::as_str) != Some("m.reaction") {
+                return;
+            }
+            if value
+                .get("unsigned")
+                .and_then(|unsigned| unsigned.get("redacted_because"))
+                .is_some()
+            {
+                return;
+            }
+            let Some(event) = decode_reaction_event(&value) else {
+                return;
+            };
+            if !event.key.starts_with("mxc://") {
+                return;
+            }
+            let Some(shortcode) = event.shortcode.clone() else {
+                return;
+            };
+            let _ = emoji::record_usage(
+                &config,
+                &crate::api::MatrixCustomEmojiUsageRequest {
+                    emoji: vec![crate::api::MatrixCustomEmojiRef {
+                        shortcode,
+                        mxc_url: event.key,
+                    }],
+                    room_id: Some(room.room_id().to_string()),
+                    observed_at_ms: Some(event.timestamp_ms),
+                },
+            );
         }
     });
 }
@@ -1182,6 +1224,7 @@ struct MatrixReactionEvent {
     sender_id: String,
     key: String,
     shortcode: Option<String>,
+    timestamp_ms: i64,
 }
 
 async fn react_message_internal(
@@ -1293,7 +1336,7 @@ async fn list_reactions_internal(
                             mxc_url: info.normalized.clone(),
                         }],
                         room_id: Some(room_id.clone()),
-                        observed_at_ms: Some(Utc::now().timestamp_millis()),
+                        observed_at_ms: Some(event.timestamp_ms),
                     },
                 )?;
             }
@@ -1401,6 +1444,7 @@ fn decode_reaction_event(value: &Value) -> Option<MatrixReactionEvent> {
         sender_id,
         key,
         shortcode: reactions::read_reaction_shortcode(content),
+        timestamp_ms: value.get("origin_server_ts").and_then(Value::as_i64).unwrap_or_default(),
     })
 }
 
@@ -1964,19 +2008,22 @@ mod tests {
         let event = decode_reaction_event(&json!({
             "event_id": "$reaction",
             "sender": "@user:example.org",
+            "origin_server_ts": 1234,
             "content": {
                 "m.relates_to": {
                     "rel_type": "m.annotation",
                     "event_id": "$message",
                     "key": "mxc://example.org/blobwave",
                     "org.matrix.msc4027.shortcode": "blobwave"
-                }
+                },
+                "shortcode": "blobwave"
             }
         }))
         .unwrap();
 
         assert_eq!(event.key, "mxc://example.org/blobwave");
         assert_eq!(event.shortcode.as_deref(), Some(":blobwave:"));
+        assert_eq!(event.timestamp_ms, 1234);
     }
 
     #[test]
