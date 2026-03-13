@@ -140,20 +140,18 @@ async function handleNonSendAction(
 
   if (ctx.action === "member-info") {
     const userId = readStringParam(ctx.params, "userId", { required: true });
-    const diagnostics = client.diagnostics();
+    const roomId =
+      readStringParam(ctx.params, "roomId") ??
+      readStringParam(ctx.params, "channelId") ??
+      readStringParam(ctx.params, "to", { required: true });
+    const resolved = client.resolveTarget({ target: roomId, createDm: false });
+    const member = client.memberInfo({
+      roomId: resolved.resolvedRoomId,
+      userId,
+    });
     return {
       ok: true,
-      member: {
-        userId,
-        known: userId === diagnostics.userId,
-        isSelf: userId === diagnostics.userId,
-        accountId: account.accountId,
-        homeserver: account.homeserver ?? null,
-        note:
-          userId === diagnostics.userId
-            ? "Resolved from active Matrix device diagnostics."
-            : "Native member directory lookup is not implemented yet.",
-      },
+      member,
     };
   }
 
@@ -162,20 +160,20 @@ async function handleNonSendAction(
       readStringParam(ctx.params, "roomId") ??
       readStringParam(ctx.params, "channelId") ??
       readStringParam(ctx.params, "to", { required: true });
-    const diagnostics = client.diagnostics();
     const roomOverride =
       account.config.rooms?.[roomId] ??
       account.config.groups?.[roomId];
+    const resolved = client.resolveTarget({ target: roomId, createDm: false });
+    const channel = client.channelInfo({
+      roomId: resolved.resolvedRoomId,
+    });
     return {
       ok: true,
       channel: {
-        roomId,
+        ...channel,
         accountId: account.accountId,
+        target: resolved.canonicalTarget,
         homeserver: account.homeserver ?? null,
-        userId: diagnostics.userId || account.userId || null,
-        deviceId: diagnostics.deviceId || null,
-        syncState: diagnostics.syncState,
-        verificationState: diagnostics.verificationState,
         threadReplies: roomOverride?.threadReplies ?? account.config.threadReplies ?? "inbound",
         requireMention: roomOverride?.requireMention ?? true,
       },

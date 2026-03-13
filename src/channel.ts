@@ -23,6 +23,7 @@ import {
 } from "./matrix/accounts.js";
 import { resolveNativeConfig } from "./matrix/adapter/config.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
+import { handleMatrixInboundEvent, sendMatrixMedia } from "./matrix/inbound.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
 
@@ -92,13 +93,14 @@ function buildStatusFromDiagnostics(
   };
 }
 
-function handleNativeEvent(params: {
+async function handleNativeEvent(params: {
   event: MatrixNativeEvent;
   account: ResolvedMatrixAccount;
   log?: { info: (message: string) => void; debug?: (message: string) => void };
   setStatus: (next: Record<string, unknown>) => void;
   client: MatrixNativeClient;
-}): void {
+  cfg: CoreConfig;
+}): Promise<void> {
   const { event, account, log, setStatus, client } = params;
   if (event.type === "lifecycle") {
     log?.info?.(`[matrix:${account.accountId}] ${event.stage}: ${event.detail}`);
@@ -108,6 +110,16 @@ function handleNativeEvent(params: {
     const diagnostics = client.diagnostics();
     setStatus(buildStatusFromDiagnostics(account, diagnostics));
     log?.info?.(`[matrix:${account.accountId}] sync_state=${event.state}`);
+    return;
+  }
+  if (event.type === "inbound") {
+    await handleMatrixInboundEvent({
+      cfg: params.cfg,
+      account,
+      client,
+      event: event.event,
+      log,
+    });
     return;
   }
   log?.debug?.(
@@ -150,7 +162,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
     chatTypes: ["direct", "group", "thread"],
     threads: true,
     reactions: false,
-    media: false,
+    media: true,
   },
   reload: { configPrefixes: ["channels.matrix"] },
   configSchema: buildChannelConfigSchema(MatrixRustConfigSchema),
@@ -207,14 +219,10 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
     notifyApproval: async ({ id, cfg, accountId }) => {
       const account = resolveMatrixRustAccount({ cfg: cfg as CoreConfig, accountId });
       const client = ensureMatrixClientStarted(account);
-      try {
-        client.sendMessage({
-          roomId: `user:${id}`,
-          text: "Your pairing request has been approved.",
-        });
-      } catch {
-        // The approval message is best-effort until inbound lifecycle is implemented.
-      }
+      client.sendMessage({
+        roomId: `user:${id}`,
+        text: "Your pairing request has been approved.",
+      });
     },
   },
   groups: {
@@ -281,6 +289,22 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         to,
         messageId: result.messageId,
       };
+    },
+    sendMedia: async ({ cfg, to, mediaUrl, text, replyToId, threadId, accountId }) => {
+      const account = resolveMatrixRustAccount({
+        cfg: cfg as CoreConfig,
+        accountId,
+      });
+      const client = ensureMatrixClientStarted(account);
+      return await sendMatrixMedia({
+        account,
+        client,
+        to,
+        mediaUrl,
+        text: text ?? undefined,
+        replyToId: replyToId ?? undefined,
+        threadId: threadId == null ? undefined : String(threadId),
+      });
     },
   },
   status: {
@@ -351,12 +375,13 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         while (!ctx.abortSignal.aborted) {
           const events = client.pollEvents();
           for (const event of events) {
-            handleNativeEvent({
+            await handleNativeEvent({
               event,
               account,
               log: ctx.log,
               setStatus: ctx.setStatus,
               client,
+              cfg: ctx.cfg as CoreConfig,
             });
           }
           await sleep(250, ctx.abortSignal);

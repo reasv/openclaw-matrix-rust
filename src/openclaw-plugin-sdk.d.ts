@@ -144,6 +144,15 @@ declare module "openclaw/plugin-sdk/matrix" {
         threadId?: string | number | null;
         accountId?: string | null;
       }) => Promise<Record<string, unknown>>;
+      sendMedia?: (params: {
+        cfg: OpenClawConfig;
+        to: string;
+        mediaUrl: string;
+        text?: string | null;
+        replyToId?: string | null;
+        threadId?: string | number | null;
+        accountId?: string | null;
+      }) => Promise<Record<string, unknown>>;
     };
     status?: {
       defaultRuntime?: Record<string, unknown>;

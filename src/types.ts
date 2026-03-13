@@ -14,6 +14,8 @@ export type MatrixAuthMode = "password" | "accessToken";
 export type MatrixSyncState = "stopped" | "starting" | "ready" | "error";
 export type MatrixVerificationState = "disabled" | "pending" | "verified";
 export type MatrixKeyBackupState = "disabled" | "pending" | "enabled";
+export type MatrixChatType = "direct" | "channel" | "thread";
+export type MatrixMediaKind = "image" | "video" | "audio" | "file";
 
 export type MatrixRoomConfig = {
   enabled?: boolean;
@@ -139,6 +141,10 @@ export type MatrixNativeEvent =
       threadId?: string;
       replyToId?: string;
       at: string;
+    }
+  | {
+      type: "inbound";
+      event: MatrixInboundEvent;
     };
 
 export type MatrixNativeDiagnostics = {
@@ -164,6 +170,114 @@ export type MatrixSendResult = {
   roomId: string;
   messageId: string;
   threadId?: string;
+};
+
+export type MatrixResolveTargetRequest = {
+  target: string;
+  createDm?: boolean;
+};
+
+export type MatrixResolveTargetResult = {
+  input: string;
+  resolvedRoomId: string;
+  canonicalTarget: string;
+  isDirect: boolean;
+  roomAlias?: string;
+};
+
+export type MatrixJoinRequest = {
+  target: string;
+};
+
+export type MatrixJoinResult = {
+  roomId: string;
+  joined: boolean;
+};
+
+export type MatrixInboundMedia = {
+  index: number;
+  kind: MatrixMediaKind;
+  body?: string;
+  filename?: string;
+  contentType?: string;
+  sizeBytes?: number;
+};
+
+export type MatrixInboundEvent = {
+  roomId: string;
+  eventId: string;
+  senderId: string;
+  senderName?: string;
+  roomName?: string;
+  roomAlias?: string;
+  chatType: MatrixChatType;
+  body: string;
+  formattedBody?: string;
+  replyToId?: string;
+  threadRootId?: string;
+  timestamp: string;
+  media: MatrixInboundMedia[];
+};
+
+export type MatrixMemberInfoRequest = {
+  roomId: string;
+  userId: string;
+};
+
+export type MatrixMemberInfo = {
+  roomId: string;
+  userId: string;
+  displayName?: string;
+  avatarUrl?: string;
+  membership?: string;
+  isSelf: boolean;
+  isDirect: boolean;
+};
+
+export type MatrixChannelInfoRequest = {
+  roomId: string;
+};
+
+export type MatrixChannelInfo = {
+  roomId: string;
+  displayName?: string;
+  canonicalAlias?: string;
+  altAliases: string[];
+  joined: boolean;
+  isDirect: boolean;
+  memberCount?: number;
+};
+
+export type MatrixUploadMediaRequest = {
+  roomId: string;
+  filename: string;
+  contentType: string;
+  dataBase64: string;
+  caption?: string;
+  replyToId?: string;
+  threadId?: string;
+};
+
+export type MatrixUploadMediaResult = {
+  roomId: string;
+  messageId: string;
+  filename: string;
+  contentType: string;
+};
+
+export type MatrixDownloadMediaRequest = {
+  roomId: string;
+  eventId: string;
+};
+
+export type MatrixDownloadMediaResult = {
+  roomId: string;
+  eventId: string;
+  kind: MatrixMediaKind;
+  body?: string;
+  filename?: string;
+  contentType?: string;
+  dataBase64: string;
 };
 
 export type MatrixReactionKind = "unicode" | "custom" | "text";

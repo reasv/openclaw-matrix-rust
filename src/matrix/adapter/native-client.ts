@@ -1,16 +1,28 @@
 import { MatrixCoreClient } from "../../../npm/index.js";
 import type {
+  MatrixChannelInfo,
+  MatrixChannelInfoRequest,
+  MatrixDownloadMediaRequest,
+  MatrixDownloadMediaResult,
   MatrixNativeConfig,
   MatrixNativeDiagnostics,
   MatrixEmojiUsageRequest,
+  MatrixJoinRequest,
+  MatrixJoinResult,
   MatrixListEmojiRequest,
   MatrixListReactionsRequest,
+  MatrixMemberInfo,
+  MatrixMemberInfoRequest,
   MatrixNativeEvent,
   MatrixReactRequest,
   MatrixReactResult,
   MatrixReactionSummary,
+  MatrixResolveTargetRequest,
+  MatrixResolveTargetResult,
   MatrixSendRequest,
   MatrixSendResult,
+  MatrixUploadMediaRequest,
+  MatrixUploadMediaResult,
 } from "../../types.js";
 import { decodeNativeDiagnostics, decodeNativeEvents, decodeSendResult } from "./events.js";
 
@@ -20,6 +32,12 @@ type NativeBindingClient = {
   pollEvents(): string;
   diagnostics(): string;
   sendMessage(requestJson: string): string;
+  resolveTarget(requestJson: string): string;
+  joinRoom(requestJson: string): string;
+  memberInfo(requestJson: string): string;
+  channelInfo(requestJson: string): string;
+  uploadMedia(requestJson: string): string;
+  downloadMedia(requestJson: string): string;
   reactMessage(requestJson: string): string;
   listReactions(requestJson: string): string;
   recordCustomEmojiUsage(requestJson: string): void;
@@ -51,6 +69,30 @@ export class MatrixNativeClient {
 
   sendMessage(request: MatrixSendRequest): MatrixSendResult {
     return decodeSendResult(this.#client.sendMessage(JSON.stringify(request)));
+  }
+
+  resolveTarget(request: MatrixResolveTargetRequest): MatrixResolveTargetResult {
+    return JSON.parse(this.#client.resolveTarget(JSON.stringify(request))) as MatrixResolveTargetResult;
+  }
+
+  joinRoom(request: MatrixJoinRequest): MatrixJoinResult {
+    return JSON.parse(this.#client.joinRoom(JSON.stringify(request))) as MatrixJoinResult;
+  }
+
+  memberInfo(request: MatrixMemberInfoRequest): MatrixMemberInfo {
+    return JSON.parse(this.#client.memberInfo(JSON.stringify(request))) as MatrixMemberInfo;
+  }
+
+  channelInfo(request: MatrixChannelInfoRequest): MatrixChannelInfo {
+    return JSON.parse(this.#client.channelInfo(JSON.stringify(request))) as MatrixChannelInfo;
+  }
+
+  uploadMedia(request: MatrixUploadMediaRequest): MatrixUploadMediaResult {
+    return JSON.parse(this.#client.uploadMedia(JSON.stringify(request))) as MatrixUploadMediaResult;
+  }
+
+  downloadMedia(request: MatrixDownloadMediaRequest): MatrixDownloadMediaResult {
+    return JSON.parse(this.#client.downloadMedia(JSON.stringify(request))) as MatrixDownloadMediaResult;
   }
 
   reactMessage(request: MatrixReactRequest): MatrixReactResult {
