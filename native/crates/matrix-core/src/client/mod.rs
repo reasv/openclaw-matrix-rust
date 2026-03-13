@@ -36,14 +36,15 @@ use crate::{
         MatrixAuthConfig, MatrixChannelInfo, MatrixChannelInfoRequest, MatrixClientConfig,
         MatrixCustomEmojiUsageRequest, MatrixDiagnostics, MatrixDownloadMediaRequest,
         MatrixDownloadMediaResult, MatrixJoinRequest, MatrixJoinResult, MatrixKeyBackupState,
-        MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMemberInfo,
+        MatrixLinkPreviewResult, MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMemberInfo,
         MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
-        MatrixReactionSummary, MatrixResolveTargetRequest, MatrixResolveTargetResult,
-        MatrixSendRequest, MatrixSendResult, MatrixSyncState, MatrixUploadMediaRequest,
-        MatrixUploadMediaResult, MatrixVerificationState, NativeLifecycleStage, StoredSession,
+        MatrixReactionSummary, MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest,
+        MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixSyncState,
+        MatrixUploadMediaRequest, MatrixUploadMediaResult, MatrixVerificationState,
+        NativeLifecycleStage, StoredSession,
     },
     auth::session,
-    crypto, emoji, events, media, reactions, state, sync, MatrixError, MatrixResult,
+    crypto, emoji, events, media, previews, reactions, state, sync, MatrixError, MatrixResult,
 };
 
 struct SharedState {
@@ -477,6 +478,23 @@ impl MatrixCoreService {
             .as_ref()
             .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
         emoji::list_shortcodes(config, &request)
+    }
+
+    pub fn resolve_link_previews(
+        &self,
+        request: MatrixResolveLinkPreviewsRequest,
+    ) -> MatrixResult<MatrixLinkPreviewResult> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        let access_token = self
+            .session
+            .as_ref()
+            .map(|session| session.access_token.clone())
+            .ok_or_else(|| MatrixError::State("matrix session is unavailable".to_string()))?;
+        self.runtime
+            .block_on(previews::resolve_link_previews(config, &access_token, &request))
     }
 
     fn release_client(&self, client: Client) {

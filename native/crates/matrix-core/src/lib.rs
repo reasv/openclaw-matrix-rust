@@ -21,7 +21,8 @@ use crate::{
         MatrixChannelInfoRequest, MatrixClientConfig, MatrixCustomEmojiUsageRequest,
         MatrixDownloadMediaRequest, MatrixJoinRequest, MatrixListEmojiRequest,
         MatrixListReactionsRequest, MatrixMemberInfoRequest, MatrixReactRequest,
-        MatrixResolveTargetRequest, MatrixSendRequest, MatrixUploadMediaRequest,
+        MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest, MatrixSendRequest,
+        MatrixUploadMediaRequest,
     },
     client::MatrixCoreService,
 };
@@ -40,6 +41,8 @@ enum MatrixError {
     MatrixSdk(#[from] matrix_sdk::Error),
     #[error(transparent)]
     Http(#[from] matrix_sdk::HttpError),
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
     #[error(transparent)]
     MatrixBuild(#[from] matrix_sdk::ClientBuildError),
     #[error(transparent)]
@@ -191,6 +194,15 @@ impl MatrixCoreClient {
             serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
         let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
         let result = inner.list_known_shortcodes(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "resolveLinkPreviews")]
+    pub fn resolve_link_previews(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixResolveLinkPreviewsRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.resolve_link_previews(request).map_err(to_napi_error)?;
         serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
     }
 }

@@ -295,6 +295,49 @@ pub struct MatrixDownloadMediaResult {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixLinkPreviewSourceKind {
+    Synapse,
+    FxTwitter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixLinkPreviewSource {
+    pub url: String,
+    pub source_kind: MatrixLinkPreviewSourceKind,
+    pub site_name: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixLinkPreviewMedia {
+    pub source_url: String,
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixLinkPreviewResult {
+    pub text_blocks: Vec<String>,
+    pub media: Vec<MatrixLinkPreviewMedia>,
+    pub sources: Vec<MatrixLinkPreviewSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixResolveLinkPreviewsRequest {
+    pub body_text: String,
+    pub max_bytes: Option<usize>,
+    pub include_images: Option<bool>,
+    pub x_preview_via_fx_twitter: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MatrixReactionKeyKind {
     Unicode,

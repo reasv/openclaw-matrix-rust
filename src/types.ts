@@ -16,6 +16,7 @@ export type MatrixVerificationState = "disabled" | "pending" | "verified";
 export type MatrixKeyBackupState = "disabled" | "pending" | "enabled";
 export type MatrixChatType = "direct" | "channel" | "thread";
 export type MatrixMediaKind = "image" | "video" | "audio" | "file";
+export type MatrixLinkPreviewSourceKind = "synapse" | "fx_twitter";
 
 export type MatrixRoomConfig = {
   enabled?: boolean;
@@ -46,6 +47,7 @@ export type MatrixChannelAccountConfig = {
   threadReplies?: MatrixThreadRepliesMode;
   textChunkLimit?: number;
   mediaMaxMb?: number;
+  xPreviewViaFxTwitter?: boolean;
   autoJoin?: MatrixAutoJoinMode;
   groupAllowFrom?: string[];
   dm?: {
@@ -278,6 +280,34 @@ export type MatrixDownloadMediaResult = {
   filename?: string;
   contentType?: string;
   dataBase64: string;
+};
+
+export type MatrixLinkPreviewSource = {
+  url: string;
+  sourceKind: MatrixLinkPreviewSourceKind;
+  siteName?: string;
+  title?: string;
+  description?: string;
+};
+
+export type MatrixLinkPreviewMedia = {
+  sourceUrl: string;
+  filename?: string;
+  contentType?: string;
+  dataBase64: string;
+};
+
+export type MatrixResolveLinkPreviewsRequest = {
+  bodyText: string;
+  maxBytes?: number;
+  includeImages?: boolean;
+  xPreviewViaFxTwitter?: boolean;
+};
+
+export type MatrixLinkPreviewResult = {
+  textBlocks: string[];
+  media: MatrixLinkPreviewMedia[];
+  sources: MatrixLinkPreviewSource[];
 };
 
 export type MatrixReactionKind = "unicode" | "custom" | "text";

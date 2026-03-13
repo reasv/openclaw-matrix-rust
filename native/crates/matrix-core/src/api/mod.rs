@@ -6,6 +6,8 @@ pub use types::{
     MatrixCustomEmojiRoomStats, MatrixCustomEmojiUsageRequest, MatrixDiagnostics,
     MatrixDownloadMediaRequest, MatrixDownloadMediaResult, MatrixInboundEvent,
     MatrixInboundMedia, MatrixJoinRequest, MatrixJoinResult, MatrixKeyBackupState,
+    MatrixLinkPreviewMedia, MatrixLinkPreviewResult, MatrixLinkPreviewSource,
+    MatrixLinkPreviewSourceKind, MatrixResolveLinkPreviewsRequest,
     MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMediaKind, MatrixMemberInfo,
     MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
     MatrixReactionInfo, MatrixReactionKeyKind, MatrixReactionSummary, MatrixResolveTargetRequest,

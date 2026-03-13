@@ -9,6 +9,7 @@ import type {
   MatrixEmojiUsageRequest,
   MatrixJoinRequest,
   MatrixJoinResult,
+  MatrixLinkPreviewResult,
   MatrixListEmojiRequest,
   MatrixListReactionsRequest,
   MatrixMemberInfo,
@@ -17,6 +18,7 @@ import type {
   MatrixReactRequest,
   MatrixReactResult,
   MatrixReactionSummary,
+  MatrixResolveLinkPreviewsRequest,
   MatrixResolveTargetRequest,
   MatrixResolveTargetResult,
   MatrixSendRequest,
@@ -42,6 +44,7 @@ type NativeBindingClient = {
   listReactions(requestJson: string): string;
   recordCustomEmojiUsage(requestJson: string): void;
   listKnownShortcodes(requestJson: string): string;
+  resolveLinkPreviews(requestJson: string): string;
 };
 
 export class MatrixNativeClient {
@@ -109,5 +112,9 @@ export class MatrixNativeClient {
 
   listKnownShortcodes(request: MatrixListEmojiRequest = {}): string[] {
     return JSON.parse(this.#client.listKnownShortcodes(JSON.stringify(request))) as string[];
+  }
+
+  resolveLinkPreviews(request: MatrixResolveLinkPreviewsRequest): MatrixLinkPreviewResult {
+    return JSON.parse(this.#client.resolveLinkPreviews(JSON.stringify(request))) as MatrixLinkPreviewResult;
   }
 }

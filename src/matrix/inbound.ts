@@ -256,6 +256,29 @@ async function saveInboundMedia(params: {
   return saved;
 }
 
+async function savePreviewMedia(params: {
+  account: ResolvedMatrixAccount;
+  media: Array<{ dataBase64: string; contentType?: string; filename?: string }>;
+}): Promise<Array<{ path: string; contentType?: string }>> {
+  const runtime = getMatrixRustRuntime() as any;
+  const maxBytes = resolveMediaMaxBytes(params.account);
+  const saved: Array<{ path: string; contentType?: string }> = [];
+  for (const item of params.media) {
+    const persisted = await runtime.channel.media.saveMediaBuffer(
+      Buffer.from(item.dataBase64, "base64"),
+      item.contentType,
+      "inbound",
+      maxBytes,
+      item.filename,
+    );
+    saved.push({
+      path: persisted.path,
+      contentType: persisted.contentType ?? item.contentType,
+    });
+  }
+  return saved;
+}
+
 async function deliverReplyPayload(params: {
   cfg: CoreConfig;
   account: ResolvedMatrixAccount;
@@ -355,17 +378,41 @@ export async function handleMatrixInboundEvent(params: {
 
   const mentionRegexes = runtime.channel.mentions.buildMentionRegexes(cfg, route.agentId);
   const explicitMention = detectExplicitMention(event, diagnostics.userId);
+  const baseBodyText = event.body.trim();
+  let previewTextBlocks: string[] = [];
+  let previewMedia: Array<{ path: string; contentType?: string }> = [];
+  try {
+    const previewResult = client.resolveLinkPreviews({
+      bodyText: baseBodyText,
+      maxBytes: resolveMediaMaxBytes(account),
+      includeImages: true,
+      xPreviewViaFxTwitter: account.config.xPreviewViaFxTwitter === true,
+    });
+    previewTextBlocks = previewResult.textBlocks;
+    previewMedia = await savePreviewMedia({
+      account,
+      media: previewResult.media,
+    });
+  } catch (err) {
+    log?.debug?.(
+      `[matrix:${account.accountId}] preview resolution failed for ${event.eventId}: ${String(err)}`,
+    );
+  }
+  const bodyText = [baseBodyText, ...previewTextBlocks].filter(Boolean).join("\n").trim();
   const wasMentioned =
     event.chatType === "direct"
       ? true
       : runtime.channel.mentions.matchesMentionWithExplicit({
-          text: event.body,
+          text: baseBodyText,
           mentionRegexes,
           explicitWasMentioned: explicitMention,
         });
   const inboundHistory = appendInboundHistory({
     sessionKey: route.sessionKey,
-    event,
+    event: {
+      ...event,
+      body: bodyText,
+    },
   });
   if (event.chatType !== "direct" && shouldRequireMention(account, event) && !wasMentioned) {
     return;
@@ -373,8 +420,10 @@ export async function handleMatrixInboundEvent(params: {
 
   await recordInboundEmojiUsage({ client, event });
 
-  const media = await saveInboundMedia({ account, client, event });
-  const bodyText = event.body.trim();
+  const media = [
+    ...(await saveInboundMedia({ account, client, event })),
+    ...previewMedia,
+  ];
   const conversationLabel = isDirectMessage
     ? (event.senderName ?? event.senderId)
     : (event.roomName ?? event.roomAlias ?? event.roomId);
@@ -409,6 +458,7 @@ export async function handleMatrixInboundEvent(params: {
     GroupChannel: isDirectMessage ? undefined : (event.roomAlias ?? event.roomId),
     OriginatingChannel: "matrix",
     OriginatingTo: `room:${event.roomId}`,
+    LinkPreviews: previewTextBlocks.length > 0 ? previewTextBlocks : undefined,
   });
 
   const storePath = runtime.channel.session.resolveStorePath((cfg as any).session?.store, {
