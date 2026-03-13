@@ -9,6 +9,9 @@ declare module "openclaw/plugin-sdk/matrix" {
   };
   export type OpenClawConfig = {
     channels?: Record<string, unknown> & {
+      defaults?: {
+        groupPolicy?: GroupPolicy;
+      };
       matrix?: unknown;
     };
     commands?: {
@@ -262,6 +265,15 @@ declare module "openclaw/plugin-sdk/matrix" {
   export function evaluateGroupRouteAccessForPolicy(params: Record<string, unknown>): {
     allowed: boolean;
     reason: string;
+  };
+  export function resolveDefaultGroupPolicy(cfg: OpenClawConfig): GroupPolicy | undefined;
+  export function resolveAllowlistProviderRuntimeGroupPolicy(params: {
+    providerConfigPresent: boolean;
+    groupPolicy?: GroupPolicy;
+    defaultGroupPolicy?: GroupPolicy;
+  }): {
+    groupPolicy: GroupPolicy;
+    providerMissingFallbackApplied: boolean;
   };
   export function formatAllowlistMatchMeta(match: Record<string, unknown>): string;
   export function logInboundDrop(params: Record<string, unknown>): void;

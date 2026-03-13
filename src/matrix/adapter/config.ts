@@ -20,7 +20,7 @@ export function resolveNativeConfig(params: {
     throw new Error(`Matrix account ${account.accountId} is missing password or accessToken`);
   }
 
-  const roomEntries = Object.entries(account.config.rooms ?? {});
+  const roomEntries = Object.entries(account.config.rooms ?? account.config.groups ?? {});
   const roomOverrides = Object.fromEntries(
     roomEntries.map(([roomId, room]) => [
       roomId,

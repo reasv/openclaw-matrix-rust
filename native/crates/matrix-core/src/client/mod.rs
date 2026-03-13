@@ -38,8 +38,9 @@ use crate::{
         MatrixEditMessageRequest, MatrixEditMessageResult, MatrixJoinRequest, MatrixJoinResult,
         MatrixKeyBackupState, MatrixLinkPreviewResult, MatrixListEmojiRequest,
         MatrixListPinsRequest, MatrixListReactionsRequest, MatrixMemberInfo,
-        MatrixMemberInfoRequest, MatrixNativeEvent, MatrixPinMessageRequest, MatrixPinsResult,
-        MatrixReactRequest, MatrixReactResult, MatrixReactionSummary, MatrixReadMessagesRequest,
+        MatrixMemberInfoRequest, MatrixMessageSummary, MatrixMessageSummaryRequest,
+        MatrixNativeEvent, MatrixPinMessageRequest, MatrixPinsResult, MatrixReactRequest,
+        MatrixReactResult, MatrixReactionSummary, MatrixReadMessagesRequest,
         MatrixReadMessagesResult, MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest,
         MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixSyncState,
         MatrixTypingRequest, MatrixUploadMediaRequest, MatrixUploadMediaResult,
@@ -497,6 +498,21 @@ impl MatrixCoreService {
             &client,
             &request.room_id,
             &request.user_id,
+        ))
+    }
+
+    pub fn message_summary(
+        &self,
+        request: MatrixMessageSummaryRequest,
+    ) -> MatrixResult<Option<MatrixMessageSummary>> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(message_summary_internal(
+            &client,
+            &request.room_id,
+            &request.event_id,
         ))
     }
 
@@ -1203,6 +1219,23 @@ async fn channel_info_internal(client: &Client, room_id: &str) -> MatrixResult<M
         is_direct: room.is_direct().await.unwrap_or(false),
         member_count: Some(room.clone_info().active_members_count() as u64),
     })
+}
+
+async fn message_summary_internal(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> MatrixResult<Option<MatrixMessageSummary>> {
+    let resolved_room_id = resolve_target_internal(client, room_id, false)
+        .await?
+        .resolved_room_id;
+    let room_id: OwnedRoomId = RoomId::parse(resolved_room_id.as_str())?.to_owned();
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+    let event_id = EventId::parse(event_id.trim())?.to_owned();
+    let event = room.load_or_fetch_event(&event_id, None).await?;
+    Ok(events::summarize_timeline_event(&event))
 }
 
 async fn download_media_internal(

@@ -212,6 +212,11 @@ export type MatrixInboundMedia = {
   sizeBytes?: number;
 };
 
+export type MatrixInboundMentions = {
+  userIds?: string[];
+  room?: boolean;
+};
+
 export type MatrixInboundEvent = {
   roomId: string;
   eventId: string;
@@ -222,6 +227,7 @@ export type MatrixInboundEvent = {
   chatType: MatrixChatType;
   body: string;
   formattedBody?: string;
+  mentions?: MatrixInboundMentions;
   replyToId?: string;
   threadRootId?: string;
   timestamp: string;
@@ -240,6 +246,11 @@ export type MatrixMessageSummary = {
   msgtype?: string;
   timestamp: string;
   relatesTo?: MatrixMessageRelatesTo;
+};
+
+export type MatrixMessageSummaryRequest = {
+  roomId: string;
+  eventId: string;
 };
 
 export type MatrixReadMessagesRequest = {

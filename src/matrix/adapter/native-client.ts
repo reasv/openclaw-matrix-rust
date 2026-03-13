@@ -19,6 +19,8 @@ import type {
   MatrixListReactionsRequest,
   MatrixMemberInfo,
   MatrixMemberInfoRequest,
+  MatrixMessageSummary,
+  MatrixMessageSummaryRequest,
   MatrixNativeEvent,
   MatrixPinsResult,
   MatrixPinMessageRequest,
@@ -47,6 +49,7 @@ type NativeBindingClient = {
   resolveTarget(requestJson: string): string;
   joinRoom(requestJson: string): string;
   readMessages(requestJson: string): string;
+  messageSummary(requestJson: string): string;
   editMessage(requestJson: string): string;
   deleteMessage(requestJson: string): string;
   pinMessage(requestJson: string): string;
@@ -101,6 +104,10 @@ export class MatrixNativeClient {
 
   readMessages(request: MatrixReadMessagesRequest): MatrixReadMessagesResult {
     return JSON.parse(this.#client.readMessages(JSON.stringify(request))) as MatrixReadMessagesResult;
+  }
+
+  messageSummary(request: MatrixMessageSummaryRequest): MatrixMessageSummary | null {
+    return JSON.parse(this.#client.messageSummary(JSON.stringify(request))) as MatrixMessageSummary | null;
   }
 
   editMessage(request: MatrixEditMessageRequest): MatrixEditMessageResult {

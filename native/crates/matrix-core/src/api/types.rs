@@ -154,6 +154,13 @@ pub struct MatrixInboundMedia {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MatrixInboundMentions {
+    pub user_ids: Option<Vec<String>>,
+    pub room: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatrixInboundEvent {
     pub room_id: String,
     pub event_id: String,
@@ -164,6 +171,7 @@ pub struct MatrixInboundEvent {
     pub chat_type: MatrixChatType,
     pub body: String,
     pub formatted_body: Option<String>,
+    pub mentions: Option<MatrixInboundMentions>,
     pub reply_to_id: Option<String>,
     pub thread_root_id: Option<String>,
     pub timestamp: DateTime<Utc>,
@@ -186,6 +194,13 @@ pub struct MatrixMessageSummary {
     pub msgtype: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub relates_to: Option<MatrixMessageRelatesTo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixMessageSummaryRequest {
+    pub room_id: String,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

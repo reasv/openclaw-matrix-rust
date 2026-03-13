@@ -8,11 +8,14 @@ import {
   evaluateGroupRouteAccessForPolicy,
   formatAllowlistMatchMeta,
   logInboundDrop,
+  resolveAllowlistProviderRuntimeGroupPolicy,
   resolveControlCommandGate,
+  resolveDefaultGroupPolicy,
 } from "openclaw/plugin-sdk/matrix";
 import type {
   CoreConfig,
   MatrixInboundEvent,
+  MatrixMessageSummary,
   ResolvedMatrixAccount,
   MatrixRoomConfig,
   MatrixThreadRepliesMode,
@@ -171,17 +174,30 @@ function shouldOverrideDmToGroup(params: {
   );
 }
 
-function detectExplicitMention(
+export function detectExplicitMention(
   event: MatrixInboundEvent,
   diagnosticsUserId: string,
 ): boolean {
+  if (event.mentions?.room) {
+    return true;
+  }
   if (!diagnosticsUserId) {
     return false;
   }
-  return (
-    event.body.includes(diagnosticsUserId) ||
-    Boolean(event.formattedBody?.includes(diagnosticsUserId))
-  );
+  return event.mentions?.userIds?.includes(diagnosticsUserId) ?? false;
+}
+
+export function resolveGroupPolicy(params: {
+  cfg: CoreConfig;
+  account: ResolvedMatrixAccount;
+}): "open" | "allowlist" | "disabled" {
+  const defaultGroupPolicy = resolveDefaultGroupPolicy(params.cfg);
+  const { groupPolicy } = resolveAllowlistProviderRuntimeGroupPolicy({
+    providerConfigPresent: params.cfg.channels?.matrix !== undefined,
+    groupPolicy: params.account.config.groupPolicy,
+    defaultGroupPolicy,
+  });
+  return groupPolicy === "blocked" ? "disabled" : groupPolicy;
 }
 
 export function extractMatrixCustomEmojiUsageFromFormattedBody(
@@ -450,7 +466,7 @@ export async function handleMatrixInboundEvent(params: {
   }
 
   const allowlistOnly = account.config.allowlistOnly === true;
-  const groupPolicyRaw = account.config.groupPolicy === "blocked" ? "disabled" : (account.config.groupPolicy ?? "allowlist");
+  const groupPolicyRaw = resolveGroupPolicy({ cfg, account });
   const groupPolicy =
     allowlistOnly && groupPolicyRaw === "open" ? "allowlist" : groupPolicyRaw;
   const dmEnabled = account.config.dm?.enabled ?? true;
@@ -511,9 +527,23 @@ export async function handleMatrixInboundEvent(params: {
     channel: "matrix",
     accountId: account.accountId,
   });
-  const mentionRegexes = runtime.channel.mentions.buildMentionRegexes(cfg, route.agentId);
   const explicitMention = detectExplicitMention(event, diagnostics.userId);
   const senderName = event.senderName ?? event.senderId;
+  let replySummary: MatrixMessageSummary | null = null;
+  if (event.replyToId) {
+    try {
+      replySummary = client.messageSummary({
+        roomId: event.roomId,
+        eventId: event.replyToId,
+      });
+    } catch (err) {
+      log?.debug?.(
+        `[matrix:${account.accountId}] failed to resolve reply target ${event.replyToId}: ${String(err)}`,
+      );
+    }
+  }
+  const replyToBody = replySummary?.body?.trim() || undefined;
+  const replyToSender = replySummary?.sender?.trim() || undefined;
   const baseBodyText = event.body.trim();
   let previewTextBlocks: string[] = [];
   let previewMedia: Array<{ path: string; contentType?: string }> = [];
@@ -534,7 +564,19 @@ export async function handleMatrixInboundEvent(params: {
       `[matrix:${account.accountId}] preview resolution failed for ${event.eventId}: ${String(err)}`,
     );
   }
-  const bodyText = [baseBodyText, ...previewTextBlocks].filter(Boolean).join("\n").trim();
+  const bodyText = [
+    baseBodyText,
+    ...(replyToBody
+      ? [
+          `[Replying to ${replyToSender ?? "Unknown"}${event.replyToId ? ` id:${event.replyToId}` : ""}]`,
+          replyToBody,
+        ]
+      : []),
+    ...previewTextBlocks,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
     await resolveMatrixAccessState({
       isDirectMessage,
@@ -594,14 +636,7 @@ export async function handleMatrixInboundEvent(params: {
     }
   }
 
-  const wasMentioned =
-    isDirectMessage
-      ? true
-      : runtime.channel.mentions.matchesMentionWithExplicit({
-          text: baseBodyText,
-          mentionRegexes,
-          explicitWasMentioned: explicitMention,
-        });
+  const wasMentioned = isDirectMessage ? true : explicitMention;
   const allowTextCommands = runtime.channel.commands.shouldHandleTextCommands({
     cfg,
     surface: "matrix",
@@ -653,6 +688,7 @@ export async function handleMatrixInboundEvent(params: {
     !explicitMention &&
     resolvedCommandGate.commandAuthorized &&
     hasControlCommandInMessage;
+  const effectiveWasMentioned = wasMentioned || shouldBypassMention;
   bufferInboundHistory({
     sessionKey: route.sessionKey,
     event: {
@@ -662,7 +698,7 @@ export async function handleMatrixInboundEvent(params: {
     maxEntries: resolveRoomHistoryMaxEntries(account),
   });
   await recordInboundEmojiUsage({ client, event });
-  if (isRoom && requireMention && !wasMentioned && !shouldBypassMention) {
+  if (isRoom && requireMention && !effectiveWasMentioned) {
     return;
   }
   const inboundHistory = consumeInboundHistory(route.sessionKey);
@@ -689,11 +725,13 @@ export async function handleMatrixInboundEvent(params: {
     ConversationLabel: conversationLabel,
     SenderName: senderName,
     SenderId: event.senderId,
-    WasMentioned: isDirectMessage ? undefined : (wasMentioned || shouldBypassMention),
+    WasMentioned: isDirectMessage ? undefined : effectiveWasMentioned,
     Provider: "matrix",
     Surface: "matrix",
     MessageSid: event.eventId,
     ReplyToId: threadTarget ? undefined : event.replyToId,
+    ReplyToBody: threadTarget ? undefined : replyToBody,
+    ReplyToSender: threadTarget ? undefined : replyToSender,
     MessageThreadId: threadTarget,
     Timestamp: eventTimestamp,
     MediaPath: media[0]?.path,
@@ -735,7 +773,7 @@ export async function handleMatrixInboundEvent(params: {
 
   const ackReaction = (cfg.messages?.ackReaction ?? "").trim();
   const ackScope = cfg.messages?.ackReactionScope ?? "group-mentions";
-  const canDetectMention = mentionRegexes.length > 0 || explicitMention;
+  const canDetectMention = true;
   const shouldAckReaction = Boolean(
     ackReaction &&
       runtime.channel.reactions?.shouldAckReaction?.({
@@ -745,7 +783,7 @@ export async function handleMatrixInboundEvent(params: {
         isMentionableGroup: isRoom,
         requireMention,
         canDetectMention,
-        effectiveWasMentioned: wasMentioned || shouldBypassMention,
+        effectiveWasMentioned,
         shouldBypassMention,
       }),
   );

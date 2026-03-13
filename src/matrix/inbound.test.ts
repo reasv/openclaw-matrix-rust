@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractMatrixCustomEmojiUsageFromFormattedBody } from "./inbound.js";
+import {
+  detectExplicitMention,
+  extractMatrixCustomEmojiUsageFromFormattedBody,
+  resolveGroupPolicy,
+} from "./inbound.js";
+import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 
 test("extracts custom emoji regardless of attribute order", () => {
   const entries = extractMatrixCustomEmojiUsageFromFormattedBody(
@@ -44,4 +49,47 @@ test("ignores non-emoticon images and deduplicates matches", () => {
       shortcode: ":blobwave:",
     },
   ]);
+});
+
+test("detects explicit mentions from m.mentions", () => {
+  const event: MatrixInboundEvent = {
+    roomId: "!room:example.org",
+    eventId: "$event",
+    senderId: "@alice:example.org",
+    chatType: "channel",
+    body: "OpenClaw please check this",
+    mentions: {
+      userIds: ["@bot:example.org"],
+    },
+    timestamp: new Date().toISOString(),
+    media: [],
+  };
+
+  assert.equal(detectExplicitMention(event, "@bot:example.org"), true);
+});
+
+test("inherits matrix room policy from channel defaults when account policy is unset", () => {
+  const cfg: CoreConfig = {
+    channels: {
+      defaults: {
+        groupPolicy: "open",
+      },
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+      },
+    },
+  } as CoreConfig;
+  const account: ResolvedMatrixAccount = {
+    accountId: "default",
+    enabled: true,
+    configured: true,
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    authMode: "password",
+    config: cfg.channels?.matrix as ResolvedMatrixAccount["config"],
+  };
+
+  assert.equal(resolveGroupPolicy({ cfg, account }), "open");
 });

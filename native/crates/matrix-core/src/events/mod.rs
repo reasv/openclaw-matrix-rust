@@ -12,7 +12,7 @@ use matrix_sdk::{
 use serde_json::Value;
 
 use crate::api::{
-    MatrixChatType, MatrixInboundEvent, MatrixInboundMedia, MatrixMediaKind,
+    MatrixChatType, MatrixInboundEvent, MatrixInboundMedia, MatrixInboundMentions, MatrixMediaKind,
     MatrixMessageRelatesTo, MatrixMessageSummary,
 };
 
@@ -246,6 +246,11 @@ pub async fn normalize_inbound_event(
         chat_type,
         body: event.content.body().to_string(),
         formatted_body: formatted_body(&event.content.msgtype),
+        mentions: event.content.mentions.as_ref().map(|mentions| MatrixInboundMentions {
+            user_ids: (!mentions.user_ids.is_empty())
+                .then(|| mentions.user_ids.iter().map(ToString::to_string).collect()),
+            room: mentions.room.then_some(true),
+        }),
         reply_to_id,
         thread_root_id,
         timestamp: timestamp_from_event(event),

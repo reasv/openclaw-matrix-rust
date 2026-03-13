@@ -21,10 +21,10 @@ use crate::{
         MatrixChannelInfoRequest, MatrixClientConfig, MatrixCustomEmojiUsageRequest,
         MatrixDeleteMessageRequest, MatrixDownloadMediaRequest, MatrixEditMessageRequest,
         MatrixJoinRequest, MatrixListEmojiRequest, MatrixListPinsRequest,
-        MatrixListReactionsRequest, MatrixMemberInfoRequest, MatrixPinMessageRequest,
-        MatrixReactRequest, MatrixReadMessagesRequest, MatrixResolveLinkPreviewsRequest,
-        MatrixResolveTargetRequest, MatrixSendRequest, MatrixTypingRequest,
-        MatrixUploadMediaRequest,
+        MatrixListReactionsRequest, MatrixMemberInfoRequest, MatrixMessageSummaryRequest,
+        MatrixPinMessageRequest, MatrixReactRequest, MatrixReadMessagesRequest,
+        MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest, MatrixSendRequest,
+        MatrixTypingRequest, MatrixUploadMediaRequest,
     },
     client::MatrixCoreService,
 };
@@ -188,6 +188,15 @@ impl MatrixCoreClient {
             serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
         let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
         let result = inner.member_info(request).map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "messageSummary")]
+    pub fn message_summary(&self, request_json: String) -> napi::Result<String> {
+        let request: MatrixMessageSummaryRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        let result = inner.message_summary(request).map_err(to_napi_error)?;
         serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
     }
 

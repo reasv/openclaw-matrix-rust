@@ -40,3 +40,35 @@ test("maps account config into native state layout", () => {
     requireMention: false,
   });
 });
+
+test("maps groups into native room overrides when rooms are unset", () => {
+  const config = resolveNativeConfig({
+    account: {
+      accountId: "default",
+      enabled: true,
+      configured: true,
+      homeserver: "https://matrix.example",
+      userId: "@bot:example.org",
+      authMode: "password",
+      config: {
+        password: "secret",
+        groups: {
+          "!group:example.org": {
+            threadReplies: "always",
+            requireMention: false,
+          },
+        },
+      },
+    } satisfies ResolvedMatrixAccount,
+    runtime: {
+      state: {
+        resolveStateDir: () => "/tmp/openclaw-state",
+      },
+    } as never,
+  });
+
+  assert.deepEqual(config.roomOverrides["!group:example.org"], {
+    threadReplies: "always",
+    requireMention: false,
+  });
+});
