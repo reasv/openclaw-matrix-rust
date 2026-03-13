@@ -2,7 +2,7 @@
 
 This is an OpenClaw Matrix channel connector based on the Rust `matrix-sdk`, written mainly in order to properly support E2EE verification, which doesn't work with the official matrix integration.
 
-It keeps the OpenClaw plugin shell in TypeScript and moves the Matrix lifecycle boundary into a Rust `napi-rs` native core. The current implementation now covers the planned Phase 2 lifecycle milestone:
+It keeps the OpenClaw plugin shell in TypeScript and moves the Matrix lifecycle boundary into a Rust `napi-rs` native core. The implementation now covers the full plan in `Plan.md`:
 
 - standalone plugin package metadata
 - OpenClaw channel registration and config schema
@@ -11,8 +11,18 @@ It keeps the OpenClaw plugin shell in TypeScript and moves the Matrix lifecycle 
 - real `matrix-sdk` login and session restore
 - SQLite-backed state and crypto stores
 - startup lifecycle, diagnostics, and background sync state emission
+- normalized inbound event delivery into the TS routing layer
+- room join and target resolution
+- reply and thread-aware message send
+- media upload and download
+- custom emoji catalog extraction, persistence, resolution, and outbound formatting
+- reaction send, remove, and list
+- link preview resolution in Rust
+- message read, edit, delete, and pin action parity
+- per-room `threadReplies` overrides
+- inbound mention gating, buffering, access policy, and typing parity
 
-The Rust core is intentionally structured around the plan's future domains:
+The Rust core is structured around the connector's Matrix domains:
 
 - `auth/`
 - `client/`
@@ -25,12 +35,10 @@ The Rust core is intentionally structured around the plan's future domains:
 - `previews/`
 - `state/`
 
-Current limitations:
+Cutover status:
 
-- inbound event normalization is not implemented yet
-- room/member/media/link-preview parity is not implemented yet
-- verification and backup diagnostics are real, but the richer remediation flows still need more work
-- action parity is not complete
+- this repo is the active Matrix plugin implementation
+- the old `openclaw-matrix` repo is reference material only
 
 Implementation note:
 
