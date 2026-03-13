@@ -200,6 +200,42 @@ impl MatrixCoreService {
                 return Err(err);
             }
         };
+        match self.runtime.block_on(refresh_session_if_due(
+            &config,
+            &self.shared,
+            &active_session,
+            existing_session.is_some() && active_session.should_bootstrap_expiry_metadata(),
+            false,
+        )) {
+            Ok(Some((replacement_client, replacement_session))) => {
+                self.release_client(client);
+                client = replacement_client;
+                active_session = replacement_session;
+            }
+            Ok(None) => {}
+            Err(err) if is_authentication_failure(&err) => {
+                match self.runtime.block_on(reauthenticate_client(
+                    &config,
+                    &self.shared,
+                    Some(client.clone()),
+                    &active_session,
+                )) {
+                    Ok((replacement_client, replacement_session)) => {
+                        self.release_client(client);
+                        client = replacement_client;
+                        active_session = replacement_session;
+                    }
+                    Err(recovery_err) => {
+                        self.release_client(client);
+                        return Err(recovery_err);
+                    }
+                }
+            }
+            Err(err) => {
+                self.release_client(client);
+                return Err(err);
+            }
+        };
 
         self.shared.push_lifecycle(
             NativeLifecycleStage::PersistSession,
@@ -1390,12 +1426,12 @@ async fn login_with_password(
         login = login.initial_device_display_name(device_name);
     }
 
-    login.request_refresh_token().send().await?;
+    let response = login.request_refresh_token().send().await?;
     shared.push_lifecycle(
         NativeLifecycleStage::RestoreOrLogin,
         format!("logged in and activated device for {}", config.user_id),
     );
-    session::persist_client_session(config, client, existing_session, None)
+    session::persist_login_response(config, &response, existing_session, None)
 }
 
 async fn initial_sync(
@@ -1457,6 +1493,60 @@ async fn run_sync_loop(
     let mut sync_token = Some(initial_sync_token);
 
     loop {
+        match refresh_session_if_due(
+            &config,
+            &shared,
+            &stored_session,
+            false,
+            true,
+        )
+        .await
+        {
+            Ok(Some((refreshed_client, refreshed_session))) => {
+                let old_client = {
+                    let mut slot = client_slot.lock().expect("matrix client slot mutex poisoned");
+                    slot.replace(refreshed_client.clone())
+                };
+                if let Some(old_client) = old_client {
+                    drop(old_client);
+                } else {
+                    drop(client.clone());
+                }
+                client = refreshed_client;
+                stored_session = refreshed_session;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                shared.push_lifecycle(
+                    NativeLifecycleStage::RestoreOrLogin,
+                    format!("proactive session refresh failed: {err}"),
+                );
+                if is_authentication_failure(&err) {
+                    match recover_sync_client(
+                        &config,
+                        &shared,
+                        &client_slot,
+                        &client,
+                        &stored_session,
+                    )
+                    .await
+                    {
+                        Ok((replacement_client, replacement_session, replacement_sync_token)) => {
+                            client = replacement_client;
+                            stored_session = replacement_session;
+                            sync_token = Some(replacement_sync_token);
+                            continue;
+                        }
+                        Err(recovery_err) => {
+                            shared.push_lifecycle(
+                                NativeLifecycleStage::RestoreOrLogin,
+                                format!("session recovery failed: {recovery_err}"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         let settings =
             sync::build_settings(sync_token.clone(), config.initial_sync_limit, Duration::from_secs(30));
         let sync_result = tokio::select! {
@@ -1519,6 +1609,36 @@ async fn run_sync_loop(
     }
 }
 
+async fn refresh_session_if_due(
+    config: &MatrixClientConfig,
+    shared: &Arc<SharedState>,
+    stored_session: &StoredSession,
+    force_refresh: bool,
+    register_inbound: bool,
+) -> MatrixResult<Option<(Client, StoredSession)>> {
+    if !force_refresh && !stored_session.should_refresh_before_request() {
+        return Ok(None);
+    }
+
+    shared.push_lifecycle(
+        NativeLifecycleStage::RestoreOrLogin,
+        format!(
+            "refreshing matrix access token before expiry for {} on device {}",
+            stored_session.user_id, stored_session.device_id
+        ),
+    );
+
+    let refreshed_session = session::refresh_session(config, stored_session).await?;
+    let replacement_client = build_client(config).await?;
+    install_session_callbacks(&replacement_client, config)?;
+    session::restore_session(&replacement_client, &refreshed_session).await?;
+    if register_inbound {
+        register_inbound_handler(&replacement_client, shared.clone());
+    }
+
+    Ok(Some((replacement_client, refreshed_session)))
+}
+
 fn is_authentication_expired(err: &MatrixSdkError) -> bool {
     match err {
         MatrixSdkError::Http(http_err) => is_authentication_http_error(http_err.as_ref()),
@@ -1530,6 +1650,9 @@ fn is_authentication_failure(err: &MatrixError) -> bool {
     match err {
         MatrixError::MatrixSdk(inner) => is_authentication_expired(inner),
         MatrixError::Http(inner) => is_authentication_http_error(inner),
+        MatrixError::State(message) => {
+            message.contains("M_UNKNOWN_TOKEN") || message.contains("Invalid refresh token")
+        }
         _ => false,
     }
 }
@@ -1552,32 +1675,9 @@ async fn recover_sync_client(
     current_client: &Client,
     stored_session: &StoredSession,
 ) -> MatrixResult<(Client, StoredSession, String)> {
-    let password = match &config.auth {
-        MatrixAuthConfig::Password { password } => password.as_str(),
-        MatrixAuthConfig::AccessToken { .. } => {
-            return Err(MatrixError::State(
-                "matrix session expired and no password auth is configured for recovery".to_string(),
-            ))
-        }
-    };
-
     shared.set_sync_state(MatrixSyncState::Starting);
-    shared.push_lifecycle(
-        NativeLifecycleStage::RestoreOrLogin,
-        format!(
-            "session expired for {}; re-authenticating with device {}",
-            stored_session.user_id, stored_session.device_id
-        ),
-    );
-
-    let replacement_client = build_client(config).await?;
-    install_session_callbacks(&replacement_client, config)?;
-    let replacement_session =
-        login_with_password(&replacement_client, config, Some(stored_session), password, shared).await?;
-    shared.push_lifecycle(
-        NativeLifecycleStage::PersistSession,
-        format!("persisted matrix session at {}", config.state_layout.session_file),
-    );
+    let (replacement_client, replacement_session) =
+        reauthenticate_client(config, shared, Some(current_client.clone()), stored_session).await?;
     let replacement_sync_token =
         initial_sync(&replacement_client, config, &replacement_session, shared).await?;
     register_inbound_handler(&replacement_client, shared.clone());
@@ -1601,6 +1701,20 @@ async fn recover_startup_client(
     current_client: Client,
     stored_session: &StoredSession,
 ) -> MatrixResult<(Client, StoredSession, String)> {
+    let (replacement_client, replacement_session) =
+        reauthenticate_client(config, shared, Some(current_client), stored_session).await?;
+    let replacement_sync_token =
+        initial_sync(&replacement_client, config, &replacement_session, shared).await?;
+
+    Ok((replacement_client, replacement_session, replacement_sync_token))
+}
+
+async fn reauthenticate_client(
+    config: &MatrixClientConfig,
+    shared: &Arc<SharedState>,
+    current_client: Option<Client>,
+    stored_session: &StoredSession,
+) -> MatrixResult<(Client, StoredSession)> {
     let password = match &config.auth {
         MatrixAuthConfig::Password { password } => password.as_str(),
         MatrixAuthConfig::AccessToken { .. } => {
@@ -1613,7 +1727,7 @@ async fn recover_startup_client(
     shared.push_lifecycle(
         NativeLifecycleStage::RestoreOrLogin,
         format!(
-            "startup session expired for {}; re-authenticating with device {}",
+            "session expired for {}; re-authenticating with device {}",
             stored_session.user_id, stored_session.device_id
         ),
     );
@@ -1628,10 +1742,7 @@ async fn recover_startup_client(
         NativeLifecycleStage::PersistSession,
         format!("persisted matrix session at {}", config.state_layout.session_file),
     );
-    let replacement_sync_token =
-        initial_sync(&replacement_client, config, &replacement_session, shared).await?;
-
-    Ok((replacement_client, replacement_session, replacement_sync_token))
+    Ok((replacement_client, replacement_session))
 }
 
 async fn wait_for_stop(stop_rx: &mut watch::Receiver<bool>) {
@@ -1650,6 +1761,7 @@ async fn wait_for_stop(stop_rx: &mut watch::Receiver<bool>) {
 mod tests {
     use std::{fs, path::PathBuf, time::Duration};
 
+    use chrono::Utc;
     use tokio::runtime::Runtime;
     use uuid::Uuid;
     use wiremock::{
@@ -1695,13 +1807,14 @@ mod tests {
     }
 
     async fn mount_login(server: &MockServer) {
-        mount_login_response(server, "token-1", "refresh-1", 1).await;
+        mount_login_response(server, "token-1", "refresh-1", 300000, 1).await;
     }
 
     async fn mount_login_response(
         server: &MockServer,
         access_token: &str,
         refresh_token: &str,
+        expires_in_ms: u64,
         priority: u8,
     ) {
         mount_versions(server).await;
@@ -1713,7 +1826,8 @@ mod tests {
                 "user_id": "@bot:example.org",
                 "device_id": "OCLAWDEVICE",
                 "access_token": access_token,
-                "refresh_token": refresh_token
+                "refresh_token": refresh_token,
+                "expires_in_ms": expires_in_ms
             })))
             .with_priority(priority)
             .up_to_n_times(1)
@@ -1727,7 +1841,32 @@ mod tests {
                 "user_id": "@bot:example.org",
                 "device_id": "OCLAWDEVICE",
                 "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_in_ms": expires_in_ms
+            })))
+            .with_priority(priority)
+            .up_to_n_times(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_refresh_response(
+        server: &MockServer,
+        refresh_token: &str,
+        access_token: &str,
+        next_refresh_token: &str,
+        expires_in_ms: u64,
+        priority: u8,
+    ) {
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/refresh"))
+            .and(body_partial_json(serde_json::json!({
                 "refresh_token": refresh_token
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": access_token,
+                "refresh_token": next_refresh_token,
+                "expires_in_ms": expires_in_ms
             })))
             .with_priority(priority)
             .up_to_n_times(1)
@@ -1818,8 +1957,8 @@ mod tests {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
         let server = runtime.block_on(MockServer::start());
-        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 1));
-        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 2));
+        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 300000, 1));
+        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 300000, 2));
         runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
         runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
         runtime.block_on(async {
@@ -1914,7 +2053,7 @@ mod tests {
         let root = unique_root();
         let runtime = Runtime::new().unwrap();
         let server = runtime.block_on(MockServer::start());
-        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 1));
+        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 300000, 1));
         runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
 
         let config = sample_config(&root, &server.uri());
@@ -1924,7 +2063,7 @@ mod tests {
 
         assert_eq!(first_diagnostics.sync_state, MatrixSyncState::Ready);
 
-        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 2));
+        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 300000, 2));
         runtime.block_on(async {
             Mock::given(method("GET"))
                 .and(path("/_matrix/client/v3/sync"))
@@ -1982,6 +2121,200 @@ mod tests {
         assert_eq!(diagnostics.device_id, "OCLAWDEVICE");
         assert_eq!(stored.access_token, "token-2");
         assert_eq!(stored.refresh_token.as_deref(), Some("refresh-2"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bootstraps_expiry_metadata_by_refreshing_persisted_session() {
+        let root = unique_root();
+        let runtime = Runtime::new().unwrap();
+        let server = runtime.block_on(MockServer::start());
+        let config = sample_config(&root, &server.uri());
+
+        let persisted = StoredSession {
+            account_id: config.account_id.clone(),
+            homeserver: config.homeserver.clone(),
+            auth_mode: "password".to_string(),
+            user_id: config.user_id.clone(),
+            device_id: "OCLAWDEVICE".to_string(),
+            access_token: "token-1".to_string(),
+            refresh_token: Some("refresh-1".to_string()),
+            access_token_expires_at: None,
+            sync_token: Some("next-1".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("session.json"),
+            serde_json::to_vec_pretty(&persisted).unwrap(),
+        )
+        .unwrap();
+
+        runtime.block_on(mount_versions(&server));
+        runtime.block_on(mount_refresh_response(
+            &server,
+            "refresh-1",
+            "token-2",
+            "refresh-2",
+            300000,
+            1,
+        ));
+        runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path("/_matrix/client/v3/login"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+        });
+
+        let mut service = MatrixCoreService::new();
+        let diagnostics = service.start(config).unwrap();
+        service.stop();
+
+        let stored = fs::read_to_string(root.join("session.json")).unwrap();
+        let stored: StoredSession = serde_json::from_str(&stored).unwrap();
+
+        assert_eq!(diagnostics.sync_state, MatrixSyncState::Ready);
+        assert_eq!(stored.access_token, "token-2");
+        assert_eq!(stored.refresh_token.as_deref(), Some("refresh-2"));
+        assert!(stored.access_token_expires_at.is_some());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_password_login_when_bootstrap_refresh_token_is_rejected() {
+        let root = unique_root();
+        let runtime = Runtime::new().unwrap();
+        let server = runtime.block_on(MockServer::start());
+        let config = sample_config(&root, &server.uri());
+
+        let persisted = StoredSession {
+            account_id: config.account_id.clone(),
+            homeserver: config.homeserver.clone(),
+            auth_mode: "password".to_string(),
+            user_id: config.user_id.clone(),
+            device_id: "OCLAWDEVICE".to_string(),
+            access_token: "token-1".to_string(),
+            refresh_token: Some("refresh-1".to_string()),
+            access_token_expires_at: None,
+            sync_token: Some("next-1".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("session.json"),
+            serde_json::to_vec_pretty(&persisted).unwrap(),
+        )
+        .unwrap();
+
+        runtime.block_on(mount_versions(&server));
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path("/_matrix/client/v3/refresh"))
+                .and(body_partial_json(serde_json::json!({
+                    "refresh_token": "refresh-1"
+                })))
+                .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                    "errcode": "M_UNKNOWN_TOKEN",
+                    "error": "Invalid refresh token",
+                    "soft_logout": false
+                })))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+        });
+        runtime.block_on(mount_login_response(&server, "token-2", "refresh-2", 300000, 1));
+        runtime.block_on(mount_sync_for_token(&server, "token-2", None, "next-2"));
+
+        let mut service = MatrixCoreService::new();
+        let diagnostics = service.start(config).unwrap();
+        service.stop();
+
+        let stored = fs::read_to_string(root.join("session.json")).unwrap();
+        let stored: StoredSession = serde_json::from_str(&stored).unwrap();
+
+        assert_eq!(diagnostics.sync_state, MatrixSyncState::Ready);
+        assert_eq!(stored.access_token, "token-2");
+        assert_eq!(stored.refresh_token.as_deref(), Some("refresh-2"));
+        assert!(stored.access_token_expires_at.is_some());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refreshes_before_expiry_without_relogging() {
+        let root = unique_root();
+        let runtime = Runtime::new().unwrap();
+        let server = runtime.block_on(MockServer::start());
+        runtime.block_on(mount_login_response(&server, "token-1", "refresh-1", 10, 1));
+        runtime.block_on(mount_sync_for_token(&server, "token-1", None, "next-1"));
+        runtime.block_on(mount_refresh_response(
+            &server,
+            "refresh-1",
+            "token-2",
+            "refresh-2",
+            300000,
+            1,
+        ));
+        runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
+        runtime.block_on(async {
+            Mock::given(method("GET"))
+                .and(path("/_matrix/client/v3/sync"))
+                .and(header("authorization", "Bearer token-2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "next_batch": "steady",
+                    "rooms": {},
+                    "presence": {},
+                    "account_data": {},
+                    "to_device": {},
+                    "device_lists": {},
+                    "device_one_time_keys_count": {}
+                })))
+                .with_priority(10)
+                .mount(&server)
+                .await;
+
+            Mock::given(method("POST"))
+                .and(path("/_matrix/client/v3/login"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+        });
+
+        let config = sample_config(&root, &server.uri());
+        let mut service = MatrixCoreService::new();
+        let started = service.start(config).unwrap();
+        assert_eq!(started.sync_state, MatrixSyncState::Ready);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let stored = loop {
+            let stored = fs::read_to_string(root.join("session.json"))
+                .ok()
+                .and_then(|value| serde_json::from_str::<StoredSession>(&value).ok());
+
+            if stored
+                .as_ref()
+                .is_some_and(|session| session.access_token == "token-2")
+            {
+                break stored.unwrap();
+            }
+
+            if std::time::Instant::now() >= deadline {
+                service.stop();
+                panic!("matrix client did not refresh proactively in time; stored={stored:?}");
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        service.stop();
+
+        assert_eq!(stored.refresh_token.as_deref(), Some("refresh-2"));
+        assert!(stored.access_token_expires_at.is_some());
 
         fs::remove_dir_all(root).unwrap();
     }
