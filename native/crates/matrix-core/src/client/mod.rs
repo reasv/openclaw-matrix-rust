@@ -12,14 +12,23 @@ use matrix_sdk::{
     SessionChange,
     config::RequestConfig,
     encryption::EncryptionSettings,
+    room::{IncludeRelations, RelationsOptions},
     ruma::{
-        OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomOrAliasId, RoomId, UserId,
+        EventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomOrAliasId, RoomId,
+        UserId,
+        api::Direction,
+        events::{
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent, TimelineEventType,
+            reaction::ReactionEventContent,
+            relation::{Annotation, RelationType},
+        },
         events::room::message::{
             OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation,
         },
     },
 };
+use serde_json::Value;
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 
 use crate::{
@@ -297,10 +306,15 @@ impl MatrixCoreService {
             return Err(MatrixError::State("client is not running".to_string()));
         }
         let client = self.client()?;
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
         let (room, resolved_target) = self
             .runtime
             .block_on(resolve_room_for_send(&client, &request.room_id))?;
         let content = self.runtime.block_on(build_message_content(
+            config,
             &room,
             request.text.clone(),
             request.reply_to_id.as_deref(),
@@ -412,6 +426,7 @@ impl MatrixCoreService {
         if !self.running {
             return Err(MatrixError::State("client is not running".to_string()));
         }
+        let client = self.client()?;
         let config = self
             .config
             .as_ref()
@@ -421,18 +436,25 @@ impl MatrixCoreService {
             .as_ref()
             .map(|session| session.user_id.clone())
             .unwrap_or_else(|| self.shared.diagnostics().user_id);
-        reactions::react_message(config, &request, &sender_id)
+        self.runtime.block_on(react_message_internal(
+            &client,
+            config,
+            &request,
+            &sender_id,
+        ))
     }
 
     pub fn list_reactions(
         &self,
         request: MatrixListReactionsRequest,
     ) -> MatrixResult<Vec<MatrixReactionSummary>> {
+        let client = self.client()?;
         let config = self
             .config
             .as_ref()
             .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
-        reactions::list_reactions(config, &request)
+        self.runtime
+            .block_on(list_reactions_internal(&client, config, &request))
     }
 
     pub fn record_custom_emoji_usage(
@@ -620,20 +642,33 @@ async fn resolve_room_for_send(
 }
 
 async fn build_message_content(
+    config: &MatrixClientConfig,
     room: &Room,
     text: String,
     reply_to_id: Option<&str>,
     thread_id: Option<&str>,
 ) -> MatrixResult<RoomMessageEventContent> {
+    let formatted = emoji::render_text_with_custom_emoji(
+        config,
+        &text,
+        Some(room.room_id().as_str()),
+        Utc::now().timestamp_millis(),
+    )?;
     let reply = media::build_reply(reply_to_id, thread_id)?;
     if let Some(reply) = reply {
-        let base = RoomMessageEventContentWithoutRelation::text_plain(text);
+        let base = match formatted {
+            Some(formatted) => RoomMessageEventContentWithoutRelation::text_html(text, formatted),
+            None => RoomMessageEventContentWithoutRelation::text_plain(text),
+        };
         return room
             .make_reply_event(base, reply)
             .await
             .map_err(|err| MatrixError::State(format!("failed to build reply metadata: {err}")));
     }
-    Ok(RoomMessageEventContent::text_plain(text))
+    Ok(match formatted {
+        Some(formatted) => RoomMessageEventContent::text_html(text, formatted),
+        None => RoomMessageEventContent::text_plain(text),
+    })
 }
 
 async fn join_room_internal(client: &Client, target: &str) -> MatrixResult<MatrixJoinResult> {
@@ -731,6 +766,189 @@ async fn download_media_internal(
         .get_room(&room_id)
         .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
     media::download_media(client, &room, &event_id).await
+}
+
+#[derive(Debug)]
+struct MatrixReactionEvent {
+    event_id: String,
+    sender_id: String,
+    key: String,
+}
+
+async fn react_message_internal(
+    client: &Client,
+    config: &MatrixClientConfig,
+    request: &MatrixReactRequest,
+    sender_id: &str,
+) -> MatrixResult<MatrixReactResult> {
+    let (room, resolved_target) = resolve_room_for_send(client, &request.room_id).await?;
+    let message_id = EventId::parse(request.message_id.trim())?.to_owned();
+    let reaction = reactions::resolve_reaction_key_info(
+        config,
+        &request.key,
+        Some(resolved_target.resolved_room_id.as_str()),
+        Utc::now().timestamp_millis(),
+    )?;
+
+    if request.remove.unwrap_or(false) {
+        let events = fetch_reaction_events(&room, &message_id, 200).await?;
+        let mut removed = 0u64;
+        for event in events.into_iter().filter(|event| {
+            event.sender_id == sender_id && reaction_key_matches(&event.key, &reaction)
+        }) {
+            room.redact(&EventId::parse(event.event_id.as_str())?, None, None)
+                .await?;
+            removed += 1;
+        }
+        return Ok(MatrixReactResult {
+            removed,
+            reaction: Some(reaction),
+        });
+    }
+
+    let content = ReactionEventContent::new(Annotation::new(message_id, reaction.raw.clone()));
+    let _ = room.send(content).await?;
+    if reaction.kind == crate::api::MatrixReactionKeyKind::Custom {
+        if let Some(shortcode) = reaction.shortcode.as_ref() {
+            emoji::record_usage(
+                config,
+                &crate::api::MatrixCustomEmojiUsageRequest {
+                    emoji: vec![crate::api::MatrixCustomEmojiRef {
+                        shortcode: shortcode.clone(),
+                        mxc_url: reaction.normalized.clone(),
+                    }],
+                    room_id: Some(resolved_target.resolved_room_id),
+                    observed_at_ms: Some(Utc::now().timestamp_millis()),
+                },
+            )?;
+        }
+    }
+
+    Ok(MatrixReactResult {
+        removed: 0,
+        reaction: Some(reaction),
+    })
+}
+
+async fn list_reactions_internal(
+    client: &Client,
+    config: &MatrixClientConfig,
+    request: &MatrixListReactionsRequest,
+) -> MatrixResult<Vec<MatrixReactionSummary>> {
+    let room_id = resolve_target_internal(client, &request.room_id, false)
+        .await?
+        .resolved_room_id;
+    let room_id_owned: OwnedRoomId = RoomId::parse(room_id.as_str())?.to_owned();
+    let room = client
+        .get_room(&room_id_owned)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id_owned} is not known to the client")))?;
+    let message_id = EventId::parse(request.message_id.trim())?.to_owned();
+    let events = fetch_reaction_events(&room, &message_id, request.limit.unwrap_or(100)).await?;
+    let mut summaries = std::collections::BTreeMap::<String, MatrixReactionSummary>::new();
+
+    for event in events {
+        let info = reactions::resolve_reaction_key_info(
+            config,
+            &event.key,
+            Some(room_id.as_str()),
+            Utc::now().timestamp_millis(),
+        )?;
+        let summary = summaries
+            .entry(info.normalized.clone())
+            .or_insert(MatrixReactionSummary {
+                key: info.raw.clone(),
+                normalized_key: info.normalized.clone(),
+                display: info.display.clone(),
+                kind: info.kind,
+                shortcode: info.shortcode.clone(),
+                count: 0,
+                users: Vec::new(),
+                raw_keys: Vec::new(),
+            });
+        summary.count += 1;
+        if !summary.users.iter().any(|user| user == &event.sender_id) {
+            summary.users.push(event.sender_id.clone());
+        }
+        if !summary.raw_keys.iter().any(|key| key == &event.key) {
+            summary.raw_keys.push(event.key.clone());
+        }
+    }
+
+    let mut output = summaries.into_values().collect::<Vec<_>>();
+    output.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.display.cmp(&right.display))
+    });
+    if let Some(limit) = request.limit {
+        output.truncate(limit);
+    }
+    Ok(output)
+}
+
+async fn fetch_reaction_events(
+    room: &Room,
+    message_id: &EventId,
+    limit: usize,
+) -> MatrixResult<Vec<MatrixReactionEvent>> {
+    let options = RelationsOptions {
+        dir: Direction::Backward,
+        limit: Some((limit.min(1000) as u32).into()),
+        include_relations: IncludeRelations::RelationsOfTypeAndEventType(
+            RelationType::Annotation,
+            TimelineEventType::Reaction,
+        ),
+        recurse: false,
+        from: None,
+    };
+    let relations = room.relations(message_id.to_owned(), options).await?;
+    let mut output = Vec::new();
+
+    for timeline_event in relations.chunk {
+        let raw = timeline_event.into_raw();
+        let event: AnySyncTimelineEvent = raw.deserialize().map_err(|err| {
+            MatrixError::State(format!("failed to deserialize reaction event: {err}"))
+        })?;
+        let AnySyncTimelineEvent::MessageLike(message_like) = event else {
+            continue;
+        };
+        let AnySyncMessageLikeEvent::Reaction(_) = message_like else {
+            continue;
+        };
+        let value: Value = raw.deserialize_as_unchecked().map_err(|err| {
+            MatrixError::State(format!("failed to decode reaction payload: {err}"))
+        })?;
+        let key = value
+            .get("m.relates_to")
+            .and_then(|value| value.get("key"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let sender_id = value
+            .get("sender")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let event_id = value
+            .get("event_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let (Some(key), Some(sender_id), Some(event_id)) = (key, sender_id, event_id) else {
+            continue;
+        };
+        output.push(MatrixReactionEvent {
+            event_id,
+            sender_id,
+            key,
+        });
+    }
+
+    Ok(output)
+}
+
+fn reaction_key_matches(key: &str, info: &crate::api::MatrixReactionInfo) -> bool {
+    key == info.raw
+        || key == info.normalized
+        || info.shortcode.as_deref() == Some(key)
 }
 
 async fn build_client(config: &MatrixClientConfig) -> MatrixResult<Client> {

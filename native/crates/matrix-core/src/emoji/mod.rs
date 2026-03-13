@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use regex::Regex;
+
 use crate::{
     api::{
         MatrixClientConfig, MatrixCustomEmojiCatalogEntry, MatrixCustomEmojiRef,
@@ -139,6 +141,92 @@ pub fn resolve_for_shortcode(
     Ok(resolved)
 }
 
+#[allow(dead_code)]
+pub fn extract_usage_from_formatted_html(
+    formatted_html: &str,
+) -> Vec<MatrixCustomEmojiRef> {
+    let img_tag_pattern = Regex::new("(?is)<img\\b[^>]*>").expect("valid img regex");
+    let attr_pattern = Regex::new(
+        "(?is)([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
+    )
+    .expect("valid attribute regex");
+    let mut entries = BTreeSet::new();
+
+    for tag in img_tag_pattern.find_iter(formatted_html) {
+        let raw_tag = tag.as_str();
+        let lowered = raw_tag.to_ascii_lowercase();
+        if !lowered.contains("data-mx-emoticon") {
+            continue;
+        }
+
+        let mut src: Option<String> = None;
+        let mut alt: Option<String> = None;
+        for captures in attr_pattern.captures_iter(raw_tag) {
+            let Some(name_match) = captures.get(1) else {
+                continue;
+            };
+            let value = captures
+                .get(2)
+                .or_else(|| captures.get(3))
+                .map(|value| value.as_str())
+                .unwrap_or("");
+            match name_match.as_str().to_ascii_lowercase().as_str() {
+                "src" | "data-mx-src" => src = Some(value.to_string()),
+                "alt" => alt = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        let Some(mxc_url) = src else {
+            continue;
+        };
+        let Some(shortcode) = alt.and_then(|value| normalize_shortcode(&value)) else {
+            continue;
+        };
+        if mxc_url.starts_with("mxc://") {
+            entries.insert(MatrixCustomEmojiRef { shortcode, mxc_url });
+        }
+    }
+
+    entries.into_iter().collect()
+}
+
+pub fn render_text_with_custom_emoji(
+    config: &MatrixClientConfig,
+    body: &str,
+    room_id: Option<&str>,
+    now_ms: i64,
+) -> MatrixResult<Option<String>> {
+    let shortcode_pattern =
+        Regex::new(":[A-Za-z0-9_+\\-]+:").expect("valid shortcode regex");
+    let mut rendered = String::new();
+    let mut last_index = 0usize;
+    let mut replaced = false;
+
+    for matched in shortcode_pattern.find_iter(body) {
+        let shortcode = matched.as_str();
+        let Some(entry) = resolve_for_shortcode(config, shortcode, room_id, now_ms)? else {
+            continue;
+        };
+        rendered.push_str(&escape_html(&body[last_index..matched.start()]));
+        rendered.push_str(&format!(
+            "<img data-mx-emoticon src=\"{}\" alt=\"{}\" title=\"{}\" height=\"32\" />",
+            escape_html(&entry.mxc_url),
+            escape_html(&entry.shortcode),
+            escape_html(&entry.shortcode),
+        ));
+        last_index = matched.end();
+        replaced = true;
+    }
+
+    if !replaced {
+        return Ok(None);
+    }
+
+    rendered.push_str(&escape_html(&body[last_index..]));
+    Ok(Some(rendered.replace('\n', "<br/>")))
+}
+
 pub fn list_entries_ranked(
     config: &MatrixClientConfig,
     room_id: Option<&str>,
@@ -217,6 +305,21 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+fn escape_html(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            _ => output.push(ch),
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -228,7 +331,10 @@ mod tests {
         MatrixCustomEmojiUsageRequest, MatrixListEmojiRequest, MatrixStateLayout,
     };
 
-    use super::{list_entries_ranked, list_shortcodes, normalize_shortcode, record_usage, resolve_for_shortcode};
+    use super::{
+        extract_usage_from_formatted_html, list_entries_ranked, list_shortcodes, normalize_shortcode,
+        record_usage, render_text_with_custom_emoji, resolve_for_shortcode,
+    };
 
     fn unique_root() -> PathBuf {
         std::env::temp_dir().join(format!("openclaw-matrix-rust-emoji-{}", Uuid::new_v4()))
@@ -362,6 +468,47 @@ mod tests {
                 )]),
             }
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_custom_emoji_from_formatted_html() {
+        let entries = extract_usage_from_formatted_html(
+            r#"<p>Hello <img data-mx-emoticon src="mxc://example/wave" alt=":wave:" /></p>"#,
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].shortcode, ":wave:");
+        assert_eq!(entries[0].mxc_url, "mxc://example/wave");
+    }
+
+    #[test]
+    fn renders_known_shortcodes_as_matrix_emoticons() {
+        let root = unique_root();
+        let config = sample_config(&root);
+        record_usage(
+            &config,
+            &MatrixCustomEmojiUsageRequest {
+                emoji: vec![MatrixCustomEmojiRef {
+                    shortcode: ":blobwave:".to_string(),
+                    mxc_url: "mxc://example/blobwave".to_string(),
+                }],
+                room_id: Some("!room:example".to_string()),
+                observed_at_ms: Some(100),
+            },
+        )
+        .unwrap();
+
+        let html = render_text_with_custom_emoji(
+            &config,
+            "hello :blobwave:",
+            Some("!room:example"),
+            200,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(html.contains("data-mx-emoticon"));
+        assert!(html.contains("mxc://example/blobwave"));
 
         fs::remove_dir_all(root).unwrap();
     }

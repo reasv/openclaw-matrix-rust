@@ -161,7 +161,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
   capabilities: {
     chatTypes: ["direct", "group", "thread"],
     threads: true,
-    reactions: false,
+    reactions: true,
     media: true,
   },
   reload: { configPrefixes: ["channels.matrix"] },

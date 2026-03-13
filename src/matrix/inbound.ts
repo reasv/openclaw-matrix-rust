@@ -4,6 +4,8 @@ import type {
   CoreConfig,
   MatrixInboundEvent,
   ResolvedMatrixAccount,
+  MatrixRoomConfig,
+  MatrixThreadRepliesMode,
 } from "../types.js";
 
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
@@ -36,6 +38,107 @@ function resolveBaseRouteSession(params: {
     sessionKey,
     lastRoutePolicy: sessionKey === params.baseRoute.mainSessionKey ? "main" : "session",
   };
+}
+
+function resolveRoomConfig(
+  account: ResolvedMatrixAccount,
+  event: MatrixInboundEvent,
+): MatrixRoomConfig | undefined {
+  const rooms = account.config.rooms ?? account.config.groups;
+  if (!rooms) {
+    return undefined;
+  }
+  return (
+    rooms[event.roomId] ??
+    (event.roomAlias ? rooms[event.roomAlias] : undefined)
+  );
+}
+
+function resolveThreadRepliesMode(
+  account: ResolvedMatrixAccount,
+  event: MatrixInboundEvent,
+): MatrixThreadRepliesMode {
+  return (
+    resolveRoomConfig(account, event)?.threadReplies ??
+    account.config.threadReplies ??
+    "inbound"
+  );
+}
+
+function resolveThreadTarget(
+  account: ResolvedMatrixAccount,
+  event: MatrixInboundEvent,
+): string | undefined {
+  const mode = resolveThreadRepliesMode(account, event);
+  if (mode === "off") {
+    return undefined;
+  }
+  if (mode === "inbound") {
+    return event.threadRootId ?? undefined;
+  }
+  return event.threadRootId ?? event.eventId;
+}
+
+function shouldRequireMention(
+  account: ResolvedMatrixAccount,
+  event: MatrixInboundEvent,
+): boolean {
+  if (event.chatType === "direct") {
+    return false;
+  }
+  const room = resolveRoomConfig(account, event);
+  if (room?.autoReply === true) {
+    return false;
+  }
+  if (room?.autoReply === false) {
+    return true;
+  }
+  if (typeof room?.requireMention === "boolean") {
+    return room.requireMention;
+  }
+  return true;
+}
+
+function detectExplicitMention(
+  event: MatrixInboundEvent,
+  diagnosticsUserId: string,
+): boolean {
+  if (!diagnosticsUserId) {
+    return false;
+  }
+  return (
+    event.body.includes(diagnosticsUserId) ||
+    Boolean(event.formattedBody?.includes(diagnosticsUserId))
+  );
+}
+
+async function recordInboundEmojiUsage(params: {
+  client: MatrixNativeClient;
+  event: MatrixInboundEvent;
+}): Promise<void> {
+  const { client, event } = params;
+  const formattedBody = event.formattedBody?.trim();
+  if (!formattedBody) {
+    return;
+  }
+  const matches = Array.from(
+    formattedBody.matchAll(
+      /<img\b[^>]*data-mx-emoticon[^>]*src=(?:"([^"]+)"|'([^']+)')[^>]*alt=(?:"(:[^"]+:)"|'(:[^']+:)')[^>]*>/gi,
+    ),
+  );
+  if (matches.length === 0) {
+    return;
+  }
+  client.recordCustomEmojiUsage({
+    roomId: event.roomId,
+    observedAtMs: Date.parse(event.timestamp),
+    emoji: matches
+      .map((match) => ({
+        mxcUrl: match[1] ?? match[2] ?? "",
+        shortcode: match[3] ?? match[4] ?? "",
+      }))
+      .filter((entry) => entry.mxcUrl.startsWith("mxc://") && entry.shortcode.startsWith(":")),
+  });
 }
 
 async function loadOutboundMedia(params: {
@@ -151,7 +254,7 @@ async function deliverReplyPayload(params: {
     : payload.mediaUrl
       ? [payload.mediaUrl]
       : [];
-  const defaultThreadId = inboundEvent.threadRootId ?? undefined;
+  const defaultThreadId = resolveThreadTarget(account, inboundEvent);
   const defaultReplyToId =
     account.config.replyToMode === "off" ? undefined : (payload.replyToId ?? inboundEvent.eventId);
 
@@ -198,6 +301,10 @@ export async function handleMatrixInboundEvent(params: {
     return;
   }
 
+  if (event.chatType !== "direct" && account.config.groupPolicy === "blocked") {
+    return;
+  }
+
   const isDirectMessage = event.chatType === "direct";
   const baseRoute = runtime.channel.routing.resolveAgentRoute({
     cfg,
@@ -224,6 +331,22 @@ export async function handleMatrixInboundEvent(params: {
       : routeSession.sessionKey,
   };
 
+  const mentionRegexes = runtime.channel.mentions.buildMentionRegexes(cfg, route.agentId);
+  const explicitMention = detectExplicitMention(event, diagnostics.userId);
+  const wasMentioned =
+    event.chatType === "direct"
+      ? true
+      : runtime.channel.mentions.matchesMentionWithExplicit({
+          text: event.body,
+          mentionRegexes,
+          explicitWasMentioned: explicitMention,
+        });
+  if (event.chatType !== "direct" && shouldRequireMention(account, event) && !wasMentioned) {
+    return;
+  }
+
+  await recordInboundEmojiUsage({ client, event });
+
   const media = await saveInboundMedia({ account, client, event });
   const bodyText = event.body.trim();
   const conversationLabel = isDirectMessage
@@ -242,6 +365,7 @@ export async function handleMatrixInboundEvent(params: {
     ConversationLabel: conversationLabel,
     SenderName: event.senderName,
     SenderId: event.senderId,
+    WasMentioned: event.chatType === "direct" ? undefined : wasMentioned,
     Provider: "matrix",
     Surface: "matrix",
     MessageSid: event.eventId,
