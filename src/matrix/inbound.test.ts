@@ -5,6 +5,7 @@ import {
   buildMatrixInboundPresentation,
   detectExplicitMention,
   extractMatrixCustomEmojiUsageFromFormattedBody,
+  handleMatrixInboundEvent,
   resolveMatrixReplyContext,
   resolveMatrixThreadContext,
   resolveGroupPolicy,
@@ -17,6 +18,7 @@ import {
   resolveMatrixInboundSenderLabel,
   resolveMatrixReadableBody,
 } from "./inbound-format.js";
+import { createMatrixRoomHistoryBuffer } from "./history-buffer.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 import { setMatrixRustRuntime } from "../runtime.js";
 
@@ -35,6 +37,93 @@ function createResolvedAccount(
     userId: "@bot:example.org",
     authMode: "password",
     config,
+  };
+}
+
+function createRecordStopError() {
+  return new Error("stop after record");
+}
+
+function createRuntimeForInboundTests(params: {
+  onRecordInboundSession: (payload: Record<string, unknown>) => Promise<never>;
+}) {
+  return {
+    channel: {
+      routing: {
+        resolveAgentRoute: () => ({
+          agentId: "main",
+          accountId: "default",
+          sessionKey: "agent:main:matrix:channel:!room:example.org",
+          mainSessionKey: "agent:main:main",
+          lastRoutePolicy: "session",
+        }),
+        buildAgentSessionKey: () => "agent:main:matrix:channel:!room:example.org",
+      },
+      pairing: {
+        readAllowFromStore: async () => [],
+        upsertPairingRequest: async () => ({
+          code: "PAIR",
+          created: true,
+        }),
+      },
+      commands: {
+        shouldHandleTextCommands: () => true,
+      },
+      text: {
+        hasControlCommand: () => false,
+      },
+      session: {
+        resolveStorePath: () => "/tmp/openclaw-matrix-rust-session.json",
+        readSessionUpdatedAt: () => undefined,
+        recordInboundSession: params.onRecordInboundSession,
+      },
+      reply: {
+        resolveEnvelopeFormatOptions: () => ({}),
+        formatInboundEnvelope: (ctx: { senderLabel: string; body: string }) =>
+          `${ctx.senderLabel}: ${ctx.body}`,
+        formatAgentEnvelope: (ctx: { from: string; body: string }) => `${ctx.from}: ${ctx.body}`,
+        finalizeInboundContext: (ctx: Record<string, unknown>) => ctx,
+      },
+    },
+  } as any;
+}
+
+function createClientForInboundTests() {
+  return {
+    diagnostics: () => ({
+      accountId: "default",
+      userId: "@bot:example.org",
+      deviceId: "DEVICE",
+      verificationState: "verified",
+      keyBackupState: "enabled",
+      syncState: "ready",
+      lastSuccessfulSyncAt: null,
+      lastSuccessfulDecryptionAt: null,
+      startedAt: null,
+    }),
+    resolveLinkPreviews: () => ({
+      textBlocks: [],
+      media: [],
+      sources: [],
+    }),
+    recordCustomEmojiUsage: () => undefined,
+  } as any;
+}
+
+function createInboundEvent(overrides: Partial<MatrixInboundEvent> = {}): MatrixInboundEvent {
+  return {
+    roomId: "!room:example.org",
+    eventId: "$event",
+    senderId: "@alice:example.org",
+    senderName: "Alice",
+    roomName: "Dev Room",
+    roomAlias: "#dev:example.org",
+    chatType: "channel",
+    body: "hello",
+    msgtype: "m.text",
+    timestamp: new Date().toISOString(),
+    media: [],
+    ...overrides,
   };
 }
 
@@ -506,4 +595,348 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
       threadId: undefined,
     },
   ]);
+});
+
+test("buffers unmentioned room messages and flushes them on the next mention", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const firstTimestamp = "2026-03-14T12:00:00.000Z";
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+  } as ResolvedMatrixAccount["config"]);
+  const client = createClientForInboundTests();
+
+  await handleMatrixInboundEvent({
+    cfg: {
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          password: "secret",
+          groupPolicy: "open",
+        },
+      },
+    } as CoreConfig,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$event-1",
+      body: "just chatting",
+      timestamp: firstTimestamp,
+    }),
+  });
+
+  assert.equal(recorded.length, 0);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg: {
+        channels: {
+          matrix: {
+            homeserver: "https://matrix.example.org",
+            userId: "@bot:example.org",
+            password: "secret",
+            groupPolicy: "open",
+          },
+        },
+      } as CoreConfig,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$event-2",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot what do you think?",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  assert.equal(recorded.length, 1);
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(ctx.BodyForAgent, "Bu (bu): @bot what do you think?");
+  assert.deepEqual(ctx.InboundHistory, [
+    {
+      sender: "Alice (alice)",
+      body: "just chatting",
+      timestamp: Date.parse(firstTimestamp),
+    },
+  ]);
+});
+
+test("keeps thread history separate from room-main history", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const roomTimestamp = "2026-03-14T12:05:00.000Z";
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+  } as ResolvedMatrixAccount["config"]);
+  const client = createClientForInboundTests();
+
+  await handleMatrixInboundEvent({
+    cfg: {
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          password: "secret",
+          groupPolicy: "open",
+        },
+      },
+    } as CoreConfig,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$event-room",
+      body: "room chatter",
+      timestamp: roomTimestamp,
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg: {
+        channels: {
+          matrix: {
+            homeserver: "https://matrix.example.org",
+            userId: "@bot:example.org",
+            password: "secret",
+            groupPolicy: "open",
+          },
+        },
+      } as CoreConfig,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$event-thread",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot in thread",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+        threadRootId: "$thread-root",
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(ctx.InboundHistory, undefined);
+});
+
+test("does not leak pending room history across accounts sharing the same room id", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const workTimestamp = "2026-03-14T12:10:00.000Z";
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const sharedRoomHistory = createMatrixRoomHistoryBuffer(5);
+  const client = createClientForInboundTests();
+  const workAccount = {
+    ...createResolvedAccount({
+      homeserver: "https://matrix.example.org",
+      userId: "@workbot:example.org",
+      password: "secret",
+      groupPolicy: "open",
+    } as ResolvedMatrixAccount["config"]),
+    accountId: "work",
+    userId: "@workbot:example.org",
+  } satisfies ResolvedMatrixAccount;
+  const personalAccount = {
+    ...createResolvedAccount({
+      homeserver: "https://matrix.example.org",
+      userId: "@homebot:example.org",
+      password: "secret",
+      groupPolicy: "open",
+    } as ResolvedMatrixAccount["config"]),
+    accountId: "personal",
+    userId: "@homebot:example.org",
+  } satisfies ResolvedMatrixAccount;
+  const cfg = {
+    channels: {
+      matrix: {
+        defaultAccount: "work",
+        accounts: {
+          work: {
+            homeserver: "https://matrix.example.org",
+            userId: "@workbot:example.org",
+            password: "secret",
+            groupPolicy: "open",
+          },
+          personal: {
+            homeserver: "https://matrix.example.org",
+            userId: "@homebot:example.org",
+            password: "secret",
+            groupPolicy: "open",
+          },
+        },
+      },
+    },
+  } as CoreConfig;
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account: workAccount,
+    client,
+    roomHistory: sharedRoomHistory,
+    event: createInboundEvent({
+      eventId: "$work-buffered",
+      body: "from work account",
+      timestamp: workTimestamp,
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account: personalAccount,
+      client,
+      roomHistory: sharedRoomHistory,
+      event: createInboundEvent({
+        eventId: "$personal-mentioned",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot from personal account",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const personalCtx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(personalCtx.InboundHistory, undefined);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account: workAccount,
+      client,
+      roomHistory: sharedRoomHistory,
+      event: createInboundEvent({
+        eventId: "$work-mentioned",
+        senderId: "@carol:example.org",
+        senderName: "Carol",
+        body: "@bot from work account",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const workCtx = recorded[1]?.ctx as Record<string, unknown>;
+  assert.deepEqual(workCtx.InboundHistory, [
+    {
+      sender: "Alice (alice)",
+      body: "from work account",
+      timestamp: Date.parse(workTimestamp),
+    },
+  ]);
+});
+
+test("treats roomHistoryMaxEntries zero as disabled buffering", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(0);
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+    roomHistoryMaxEntries: 0,
+  } as ResolvedMatrixAccount["config"]);
+  const client = createClientForInboundTests();
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        roomHistoryMaxEntries: 0,
+      },
+    },
+  } as CoreConfig;
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$buffered",
+      body: "buffer me",
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$mentioned",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot now",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(ctx.InboundHistory, undefined);
 });

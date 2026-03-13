@@ -24,9 +24,15 @@ import {
 import { resolveNativeConfig } from "./matrix/adapter/config.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
 import { handleMatrixInboundEvent, sendMatrixMedia } from "./matrix/inbound.js";
+import {
+  createMatrixRoomHistoryBuffer,
+  resolveMatrixRoomHistoryMaxEntries,
+  type MatrixRoomHistoryBuffer,
+} from "./matrix/history-buffer.js";
 import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
+const activeRoomHistories = new Map<string, MatrixRoomHistoryBuffer>();
 
 const meta = {
   id: "matrix",
@@ -68,8 +74,23 @@ export function ensureMatrixClientStarted(account: ResolvedMatrixAccount): Matri
   return client;
 }
 
+function getOrCreateMatrixRoomHistory(account: ResolvedMatrixAccount): MatrixRoomHistoryBuffer {
+  const normalized = normalizeAccountId(account.accountId);
+  const existing = activeRoomHistories.get(normalized);
+  if (existing) {
+    return existing;
+  }
+  const next = createMatrixRoomHistoryBuffer(
+    resolveMatrixRoomHistoryMaxEntries(account.config.roomHistoryMaxEntries),
+  );
+  activeRoomHistories.set(normalized, next);
+  return next;
+}
+
 function destroyMatrixClient(accountId: string): void {
-  activeClients.delete(normalizeAccountId(accountId));
+  const normalized = normalizeAccountId(accountId);
+  activeClients.delete(normalized);
+  activeRoomHistories.delete(normalized);
 }
 
 function buildStatusFromDiagnostics(
@@ -97,6 +118,7 @@ function buildStatusFromDiagnostics(
 async function handleNativeEvent(params: {
   event: MatrixNativeEvent;
   account: ResolvedMatrixAccount;
+  roomHistory: MatrixRoomHistoryBuffer;
   log?: { info: (message: string) => void; debug?: (message: string) => void };
   setStatus: (next: Record<string, unknown>) => void;
   client: MatrixNativeClient;
@@ -119,6 +141,7 @@ async function handleNativeEvent(params: {
       account,
       client,
       event: event.event,
+      roomHistory: params.roomHistory,
       log,
     });
     return;
@@ -379,6 +402,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
       }
 
       const client = getOrCreateMatrixClient(account.accountId);
+      const roomHistory = getOrCreateMatrixRoomHistory(account);
       const diagnostics = client.start(
         resolveNativeConfig({
           account,
@@ -394,6 +418,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
             await handleNativeEvent({
               event,
               account,
+              roomHistory,
               log: ctx.log,
               setStatus: ctx.setStatus,
               client,

@@ -36,14 +36,13 @@ import {
   resolveMatrixReadableBody,
   resolveMatrixSenderUsername,
 } from "./inbound-format.js";
+import {
+  buildMatrixHistoryScopeKey,
+  type MatrixRoomHistoryBuffer,
+} from "./history-buffer.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
-const DEFAULT_ROOM_HISTORY_MAX_ENTRIES = 30;
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
-const inboundHistories = new Map<
-  string,
-  Array<{ sender: string; body: string; timestamp?: number }>
->();
 
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
   const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
@@ -86,37 +85,6 @@ function resolveRoomConfig(
     roomId: event.roomId,
     aliases: event.roomAlias ? [event.roomAlias] : [],
   }).config;
-}
-
-function resolveRoomHistoryMaxEntries(account: ResolvedMatrixAccount): number {
-  return Math.max(
-    0,
-    Math.floor(account.config.roomHistoryMaxEntries ?? DEFAULT_ROOM_HISTORY_MAX_ENTRIES),
-  );
-}
-
-function bufferInboundHistory(params: {
-  sessionKey: string;
-  event: MatrixInboundEvent;
-  maxEntries: number;
-}): void {
-  const entry = {
-    sender: params.event.senderName ?? params.event.senderId,
-    body: params.event.body.trim(),
-    timestamp: Date.parse(params.event.timestamp),
-  };
-  const next = [...(inboundHistories.get(params.sessionKey) ?? []), entry]
-    .filter((item) => item.body)
-    .slice(-params.maxEntries);
-  inboundHistories.set(params.sessionKey, next);
-}
-
-function consumeInboundHistory(
-  sessionKey: string,
-): Array<{ sender: string; body: string; timestamp?: number }> {
-  const buffered = inboundHistories.get(sessionKey) ?? [];
-  inboundHistories.delete(sessionKey);
-  return buffered.slice(0, -1);
 }
 
 function resolveThreadRepliesMode(
@@ -281,6 +249,15 @@ export function buildMatrixInboundPresentation(params: {
       senderLabel,
     }),
   };
+}
+
+function consumeInboundHistory(params: {
+  roomHistory: MatrixRoomHistoryBuffer;
+  scopeKey: string;
+}): Array<{ sender: string; body: string; timestamp?: number }> {
+  const buffered = params.roomHistory.snapshot(params.scopeKey);
+  params.roomHistory.clear(params.scopeKey);
+  return buffered.slice(0, -1);
 }
 
 export async function resolveMatrixReplyContext(params: {
@@ -684,9 +661,10 @@ export async function handleMatrixInboundEvent(params: {
   account: ResolvedMatrixAccount;
   client: MatrixNativeClient;
   event: MatrixInboundEvent;
+  roomHistory: MatrixRoomHistoryBuffer;
   log?: { info?: (message: string) => void; debug?: (message: string) => void };
 }): Promise<void> {
-  const { cfg, account, client, event, log } = params;
+  const { cfg, account, client, event, roomHistory, log } = params;
   const runtime = getMatrixRustRuntime() as any;
   const diagnostics = client.diagnostics();
   if (event.senderId === diagnostics.userId) {
@@ -767,6 +745,11 @@ export async function handleMatrixInboundEvent(params: {
   });
   const explicitMention = detectExplicitMention(event, diagnostics.userId);
   const senderName = event.senderName ?? event.senderId;
+  const senderLabel = resolveMatrixInboundSenderLabel({
+    senderName,
+    senderId: event.senderId,
+    senderUsername: resolveMatrixSenderUsername(event.senderId),
+  });
   const baseBodyText = resolveMatrixReadableBody({
     body: event.body,
     formattedBody: event.formattedBody,
@@ -934,19 +917,29 @@ export async function handleMatrixInboundEvent(params: {
     resolvedCommandGate.commandAuthorized &&
     hasControlCommandInMessage;
   const effectiveWasMentioned = wasMentioned || shouldBypassMention;
-  bufferInboundHistory({
-    sessionKey: route.sessionKey,
-    event: {
-      ...event,
-      body: historyBodyText,
-    },
-    maxEntries: resolveRoomHistoryMaxEntries(account),
+  const historyScopeKey = buildMatrixHistoryScopeKey({
+    accountId: account.accountId,
+    roomId: event.roomId,
+    threadRootId: event.threadRootId,
   });
+  if (isRoom) {
+    roomHistory.add(historyScopeKey, {
+      sender: senderLabel,
+      body: historyBodyText,
+      timestamp: Number.isFinite(eventTimestamp) ? eventTimestamp : undefined,
+    });
+  }
   await recordInboundEmojiUsage({ client, event });
   if (isRoom && requireMention && !effectiveWasMentioned) {
     return;
   }
-  const inboundHistory = consumeInboundHistory(route.sessionKey);
+  const inboundHistory =
+    isRoom
+      ? consumeInboundHistory({
+          roomHistory,
+          scopeKey: historyScopeKey,
+        })
+      : [];
 
   const media = [
     ...(await saveInboundMedia({ account, client, event })),

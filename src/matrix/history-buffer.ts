@@ -10,6 +10,13 @@ export type MatrixRoomHistoryBuffer = {
   clear: (scopeKey: string) => void;
 };
 
+export function resolveMatrixRoomHistoryMaxEntries(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 30;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
 export function buildMatrixHistoryScopeKey(params: {
   accountId: string;
   roomId: string;
@@ -28,12 +35,15 @@ export function buildMatrixHistoryScopeKey(params: {
 
 export function createMatrixRoomHistoryBuffer(maxEntries = 30): MatrixRoomHistoryBuffer {
   const entriesByScope = new Map<string, MatrixBufferedHistoryEntry[]>();
+  const resolvedMaxEntries = resolveMatrixRoomHistoryMaxEntries(maxEntries);
 
   const clampEntries = (entries: MatrixBufferedHistoryEntry[]) => {
-    if (maxEntries <= 0) {
+    if (resolvedMaxEntries <= 0) {
       return [];
     }
-    return entries.length > maxEntries ? entries.slice(entries.length - maxEntries) : entries;
+    return entries.length > resolvedMaxEntries
+      ? entries.slice(entries.length - resolvedMaxEntries)
+      : entries;
   };
 
   return {
