@@ -211,6 +211,7 @@ export function buildMatrixInboundPresentation(params: {
   conversationLabel: string;
   replyToBody?: string;
   replyToSender?: string;
+  replyPreviewTextBlocks?: string[];
   previewTextBlocks: string[];
   eventTimestamp?: number;
   previousTimestamp?: number;
@@ -251,6 +252,7 @@ export function buildMatrixInboundPresentation(params: {
     replyToId: params.event.replyToId,
     replyToBody: params.replyToBody,
     replyToSender: params.replyToSender,
+    replyPreviewTextBlocks: params.replyPreviewTextBlocks,
     previewTextBlocks: params.previewTextBlocks,
   });
   const textWithId = params.event.threadRootId
@@ -278,6 +280,73 @@ export function buildMatrixInboundPresentation(params: {
       bodyText,
       senderLabel,
     }),
+  };
+}
+
+export async function resolveMatrixReplyContext(params: {
+  account: ResolvedMatrixAccount;
+  client: MatrixNativeClient;
+  roomId: string;
+  replyToId?: string;
+  replySummary: MatrixMessageSummary | null;
+  persistPreviewMedia?: typeof savePreviewMedia;
+  log?: { debug?: (message: string) => void };
+}): Promise<{
+  replyToBody?: string;
+  replyToSender?: string;
+  replyPreviewTextBlocks: string[];
+  replyPreviewMedia: Array<{ path: string; contentType?: string }>;
+}> {
+  const replyToBody = params.replySummary?.body?.trim() || undefined;
+  if (!params.replySummary || !replyToBody) {
+    return {
+      replyToBody,
+      replyToSender: undefined,
+      replyPreviewTextBlocks: [],
+      replyPreviewMedia: [],
+    };
+  }
+
+  let replyToSender = params.replySummary.sender?.trim() || undefined;
+  if (replyToSender) {
+    try {
+      const member = params.client.memberInfo({
+        roomId: params.roomId,
+        userId: replyToSender,
+      });
+      replyToSender = member.displayName?.trim() || replyToSender;
+    } catch (err) {
+      params.log?.debug?.(
+        `[matrix:${params.account.accountId}] failed to resolve reply sender ${replyToSender}: ${String(err)}`,
+      );
+    }
+  }
+
+  let replyPreviewTextBlocks: string[] = [];
+  let replyPreviewMedia: Array<{ path: string; contentType?: string }> = [];
+  try {
+    const previewResult = params.client.resolveLinkPreviews({
+      bodyText: replyToBody,
+      maxBytes: resolveMediaMaxBytes(params.account),
+      includeImages: true,
+      xPreviewViaFxTwitter: params.account.config.xPreviewViaFxTwitter === true,
+    });
+    replyPreviewTextBlocks = previewResult.textBlocks;
+    replyPreviewMedia = await (params.persistPreviewMedia ?? savePreviewMedia)({
+      account: params.account,
+      media: previewResult.media,
+    });
+  } catch (err) {
+    params.log?.debug?.(
+      `[matrix:${params.account.accountId}] reply preview resolution failed for ${params.replyToId ?? "unknown"}: ${String(err)}`,
+    );
+  }
+
+  return {
+    replyToBody,
+    replyToSender,
+    replyPreviewTextBlocks,
+    replyPreviewMedia,
   };
 }
 
@@ -641,8 +710,16 @@ export async function handleMatrixInboundEvent(params: {
       );
     }
   }
-  const replyToBody = replySummary?.body?.trim() || undefined;
-  const replyToSender = replySummary?.sender?.trim() || undefined;
+  const replyContext = await resolveMatrixReplyContext({
+    account,
+    client,
+    roomId: event.roomId,
+    replyToId: event.replyToId,
+    replySummary,
+    log,
+  });
+  const replyToBody = replyContext.replyToBody;
+  const replyToSender = replyContext.replyToSender;
   let previewTextBlocks: string[] = [];
   let previewMedia: Array<{ path: string; contentType?: string }> = [];
   try {
@@ -667,6 +744,7 @@ export async function handleMatrixInboundEvent(params: {
     replyToId: event.replyToId,
     replyToBody,
     replyToSender,
+    replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
     previewTextBlocks,
   });
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
@@ -797,6 +875,7 @@ export async function handleMatrixInboundEvent(params: {
 
   const media = [
     ...(await saveInboundMedia({ account, client, event })),
+    ...replyContext.replyPreviewMedia,
     ...previewMedia,
   ];
   const conversationLabel = isDirectMessage
@@ -817,6 +896,7 @@ export async function handleMatrixInboundEvent(params: {
     conversationLabel,
     replyToBody,
     replyToSender,
+    replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
     previewTextBlocks,
     eventTimestamp,
     previousTimestamp,
@@ -848,6 +928,22 @@ export async function handleMatrixInboundEvent(params: {
     ReplyToId: threadTarget ? undefined : event.replyToId,
     ReplyToBody: threadTarget ? undefined : replyToBody,
     ReplyToSender: threadTarget ? undefined : replyToSender,
+    ReplyLinkPreviews:
+      !threadTarget && replyContext.replyPreviewTextBlocks.length > 0
+        ? replyContext.replyPreviewTextBlocks
+        : undefined,
+    ReplyMediaPaths:
+      !threadTarget && replyContext.replyPreviewMedia.length > 0
+        ? replyContext.replyPreviewMedia.map((item) => item.path)
+        : undefined,
+    ReplyMediaUrls:
+      !threadTarget && replyContext.replyPreviewMedia.length > 0
+        ? replyContext.replyPreviewMedia.map((item) => item.path)
+        : undefined,
+    ReplyMediaTypes:
+      !threadTarget && replyContext.replyPreviewMedia.length > 0
+        ? replyContext.replyPreviewMedia.map((item) => item.contentType ?? "")
+        : undefined,
     MessageThreadId: threadTarget,
     Timestamp: eventTimestamp,
     MediaPath: media[0]?.path,

@@ -45,6 +45,137 @@ fn formatted_body(msgtype: &MessageType) -> Option<String> {
     }
 }
 
+fn decode_html_entities(value: &str) -> String {
+    value
+        .replace("&nbsp;", " ")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn read_html_attribute(attrs: &str, name: &str) -> Option<String> {
+    let double_quoted =
+        regex::Regex::new(&format!(r#"{name}\s*=\s*"([^"]*)""#)).expect("valid html attribute regex");
+    if let Some(value) = double_quoted
+        .captures(attrs)
+        .and_then(|captures| captures.get(1))
+        .map(|value| decode_html_entities(value.as_str()))
+    {
+        return Some(value);
+    }
+    let single_quoted =
+        regex::Regex::new(&format!(r#"{name}\s*=\s*'([^']*)'"#)).expect("valid html attribute regex");
+    single_quoted
+        .captures(attrs)
+        .and_then(|captures| captures.get(1))
+        .map(|value| decode_html_entities(value.as_str()))
+}
+
+fn normalize_matrix_emoji_label(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let shortcode_pattern = regex::Regex::new(r"^:[^:\s]+:$").expect("valid shortcode regex");
+    if shortcode_pattern.is_match(trimmed) {
+        return trimmed.to_string();
+    }
+    let bare_shortcode_pattern =
+        regex::Regex::new(r"^[A-Za-z0-9_+-]+$").expect("valid bare shortcode regex");
+    if bare_shortcode_pattern.is_match(trimmed) {
+        return format!(":{trimmed}:");
+    }
+    trimmed.to_string()
+}
+
+fn describe_matrix_mxc_uri(raw: &str) -> String {
+    raw.trim_start_matches("mxc://").to_string()
+}
+
+fn build_custom_emoji_placeholder(attrs: &str) -> String {
+    let alt = read_html_attribute(attrs, "alt").unwrap_or_default();
+    let title = read_html_attribute(attrs, "title").unwrap_or_default();
+    let src = read_html_attribute(attrs, "src").unwrap_or_default();
+    let preferred = if !alt.trim().is_empty() {
+        alt
+    } else if !title.trim().is_empty() {
+        title
+    } else {
+        String::new()
+    };
+    if !preferred.is_empty() && preferred != src {
+        return normalize_matrix_emoji_label(&preferred);
+    }
+    if src.starts_with("mxc://") {
+        return format!("[custom emoji {}]", describe_matrix_mxc_uri(&src));
+    }
+    "[custom emoji]".to_string()
+}
+
+fn render_formatted_body_text(formatted_body: Option<&str>) -> (String, bool) {
+    let Some(formatted_body) = formatted_body.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (String::new(), false);
+    };
+
+    let custom_img_pattern =
+        regex::Regex::new(r#"(?is)<img\b([^>]*\bdata-mx-emoticon\b[^>]*)>"#).expect("valid custom emoji image regex");
+    let generic_mxc_img_pattern =
+        regex::Regex::new(r#"(?is)<img\b([^>]*\bsrc\s*=\s*["']mxc://[^"']+["'][^>]*)>"#).expect("valid generic mxc image regex");
+    let line_break_pattern = regex::Regex::new(r"(?i)<br\s*/?>").expect("valid br regex");
+    let block_close_pattern =
+        regex::Regex::new(r"(?i)</(?:p|div|li|ul|ol|blockquote|pre|h[1-6]|table|tr)>").expect("valid block close regex");
+    let list_item_open_pattern = regex::Regex::new(r"(?i)<li\b[^>]*>").expect("valid list item regex");
+    let tag_pattern = regex::Regex::new(r"<[^>]+>").expect("valid html tag regex");
+    let whitespace_newline_pattern =
+        regex::Regex::new(r"[ \t]+\n").expect("valid whitespace newline regex");
+    let newline_pattern = regex::Regex::new(r"\n{3,}").expect("valid newline collapse regex");
+    let spaces_pattern = regex::Regex::new(r"[ \t]{2,}").expect("valid space collapse regex");
+
+    let mut has_custom_emoji = false;
+    let custom_replaced = custom_img_pattern
+        .replace_all(formatted_body, |captures: &regex::Captures| {
+            has_custom_emoji = true;
+            format!(
+                " {} ",
+                build_custom_emoji_placeholder(
+                    captures.get(1).map(|value| value.as_str()).unwrap_or_default()
+                )
+            )
+        })
+        .to_string();
+    let generic_replaced = generic_mxc_img_pattern
+        .replace_all(&custom_replaced, |captures: &regex::Captures| {
+            has_custom_emoji = true;
+            format!(
+                " {} ",
+                build_custom_emoji_placeholder(
+                    captures.get(1).map(|value| value.as_str()).unwrap_or_default()
+                )
+            )
+        })
+        .to_string();
+    let text = decode_html_entities(
+        &tag_pattern
+            .replace_all(
+                &list_item_open_pattern.replace_all(
+                    &block_close_pattern.replace_all(
+                        &line_break_pattern.replace_all(&generic_replaced, "\n"),
+                        "\n",
+                    ),
+                    "- ",
+                ),
+                " ",
+            )
+            .to_string(),
+    );
+    let collapsed_newlines = whitespace_newline_pattern.replace_all(&text, "\n");
+    let collapsed_paragraphs = newline_pattern.replace_all(&collapsed_newlines, "\n\n");
+    let collapsed_spaces = spaces_pattern.replace_all(&collapsed_paragraphs, " ");
+    (collapsed_spaces.trim().to_string(), has_custom_emoji)
+}
+
 fn media_items(msgtype: &MessageType) -> Vec<MatrixInboundMedia> {
     match msgtype {
         MessageType::Audio(content) => vec![MatrixInboundMedia {
@@ -120,13 +251,21 @@ fn relation_details(
 fn readable_body(content: &Value) -> String {
     let msgtype = content.get("msgtype").and_then(Value::as_str).map(str::trim);
     let body = content.get("body").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let formatted_body = content
+        .get("formatted_body")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let filename = content
         .get("filename")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
+    let (formatted_text, has_custom_emoji) = render_formatted_body_text(formatted_body);
 
-    let resolved = if !body.is_empty() {
+    let resolved = if (has_custom_emoji || body.is_empty()) && !formatted_text.is_empty() {
+        formatted_text
+    } else if !body.is_empty() {
         body.to_string()
     } else if !filename.is_empty() {
         filename.to_string()
@@ -140,6 +279,22 @@ fn readable_body(content: &Value) -> String {
         Some("m.sticker") if !resolved.is_empty() => format!("[matrix sticker] {resolved}"),
         Some("m.sticker") => "[matrix sticker]".to_string(),
         _ => resolved,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readable_body;
+    use serde_json::json;
+
+    #[test]
+    fn uses_formatted_body_for_custom_emoji_in_summaries() {
+        let content = json!({
+            "msgtype": "m.text",
+            "body": "mxc://matrix.example.org/party",
+            "formatted_body": "hello <img data-mx-emoticon src=\"mxc://matrix.example.org/party\" alt=\":party_parrot:\">"
+        });
+        assert_eq!(readable_body(&content), "hello :party_parrot:");
     }
 }
 

@@ -5,9 +5,11 @@ import {
   buildMatrixInboundPresentation,
   detectExplicitMention,
   extractMatrixCustomEmojiUsageFromFormattedBody,
+  resolveMatrixReplyContext,
   resolveGroupPolicy,
 } from "./inbound.js";
 import {
+  buildMatrixEnrichedBodyText,
   renderMatrixFormattedBody,
   resolveMatrixBodyForAgent,
   resolveMatrixInboundSenderLabel,
@@ -188,4 +190,96 @@ test("stores readable BodyForAgent and enveloped Body for group thread messages"
     presentation.body,
     /\[matrix event id: \$event room: !room:example\.org thread: \$thread-root\]/,
   );
+});
+
+test("formats reply preview blocks separately from current-message previews", () => {
+  assert.equal(
+    buildMatrixEnrichedBodyText({
+      baseBodyText: "current body",
+      replyToId: "$parent",
+      replyToSender: "Alice",
+      replyToBody: "look at https://x.com/example/status/1",
+      replyPreviewTextBlocks: ["[Tweet: Alice (@alice)]\nhello"],
+      previewTextBlocks: ["[Link preview: example.org]\ncurrent preview"],
+    }),
+    [
+      "current body",
+      "[Replying to Alice id:$parent]",
+      "look at https://x.com/example/status/1",
+      "[Reply link preview]",
+      "[Tweet: Alice (@alice)]",
+      "hello",
+      "[Link preview: example.org]",
+      "current preview",
+    ].join("\n"),
+  );
+});
+
+test("resolves reply context with display names and one-hop previews", async () => {
+  const cfg: CoreConfig = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        xPreviewViaFxTwitter: true,
+      },
+    },
+  } as CoreConfig;
+  const account: ResolvedMatrixAccount = {
+    accountId: "default",
+    enabled: true,
+    configured: true,
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    authMode: "password",
+    config: cfg.channels?.matrix as ResolvedMatrixAccount["config"],
+  };
+
+  const replyContext = await resolveMatrixReplyContext({
+    account,
+    client: {
+      memberInfo: ({ userId }: { userId: string }) => ({
+        roomId: "!room:example.org",
+        userId,
+        displayName: "Alice",
+        isSelf: false,
+        isDirect: false,
+      }),
+      resolveLinkPreviews: ({ bodyText }: { bodyText: string }) => {
+        assert.equal(bodyText, "look at https://x.com/example/status/1");
+        return {
+          textBlocks: ["[Tweet: Alice (@alice)]\nhello from x"],
+          media: [
+            {
+              dataBase64: Buffer.from("reply-preview").toString("base64"),
+              contentType: "image/png",
+              filename: "reply-preview.png",
+              sourceUrl: "https://example.org/reply-preview.png",
+            },
+          ],
+          sources: [],
+        };
+      },
+    } as any,
+    roomId: "!room:example.org",
+    replyToId: "$parent",
+    replySummary: {
+      eventId: "$parent",
+      sender: "@alice:example.org",
+      body: "look at https://x.com/example/status/1",
+      timestamp: new Date().toISOString(),
+    },
+    persistPreviewMedia: async ({ media }) => {
+      assert.equal(media.length, 1);
+      return [{ path: "/tmp/reply-preview.png", contentType: media[0]?.contentType }];
+    },
+  });
+
+  assert.equal(replyContext.replyToBody, "look at https://x.com/example/status/1");
+  assert.equal(replyContext.replyToSender, "Alice");
+  assert.deepEqual(replyContext.replyPreviewTextBlocks, ["[Tweet: Alice (@alice)]\nhello from x"]);
+  assert.deepEqual(replyContext.replyPreviewMedia, [
+    { path: "/tmp/reply-preview.png", contentType: "image/png" },
+  ]);
 });

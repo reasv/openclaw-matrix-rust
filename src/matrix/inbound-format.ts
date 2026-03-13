@@ -42,6 +42,7 @@ export function buildMatrixEnrichedBodyText(params: {
   replyToId?: string;
   replyToBody?: string;
   replyToSender?: string;
+  replyPreviewTextBlocks?: string[];
   previewTextBlocks: string[];
 }): string {
   return [
@@ -54,6 +55,7 @@ export function buildMatrixEnrichedBodyText(params: {
           params.replyToBody,
         ]
       : []),
+    ...((params.replyPreviewTextBlocks ?? []).flatMap((block) => ["[Reply link preview]", block])),
     ...params.previewTextBlocks,
   ]
     .filter(Boolean)
