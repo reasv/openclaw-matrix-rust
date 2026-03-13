@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import { matrixRustActions, summarizeReactionsForTool } from "./actions.js";
+import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
+import { setMatrixRustRuntime } from "./runtime.js";
 import type { CoreConfig, MatrixReactionSummary } from "./types.js";
 
 const baseConfig: CoreConfig = {
@@ -12,6 +14,67 @@ const baseConfig: CoreConfig = {
     },
   },
 };
+
+const originalDiagnostics = MatrixNativeClient.prototype.diagnostics;
+const originalSendMessage = MatrixNativeClient.prototype.sendMessage;
+const originalUploadMedia = MatrixNativeClient.prototype.uploadMedia;
+
+function installReadyClient(params: {
+  sendMessage?: (request: Record<string, unknown>) => Record<string, unknown>;
+  uploadMedia?: (request: Record<string, unknown>) => Record<string, unknown>;
+}) {
+  MatrixNativeClient.prototype.diagnostics = function diagnostics() {
+    return {
+      accountId: "default",
+      userId: "@bot:example.org",
+      deviceId: "DEVICE",
+      verificationState: "verified",
+      keyBackupState: "enabled",
+      syncState: "ready",
+      lastSuccessfulSyncAt: null,
+      lastSuccessfulDecryptionAt: null,
+      startedAt: null,
+    };
+  };
+  MatrixNativeClient.prototype.sendMessage = function sendMessage(request) {
+    if (!params.sendMessage) {
+      throw new Error("unexpected sendMessage");
+    }
+    return params.sendMessage(request as Record<string, unknown>) as any;
+  };
+  MatrixNativeClient.prototype.uploadMedia = function uploadMedia(request) {
+    if (!params.uploadMedia) {
+      throw new Error("unexpected uploadMedia");
+    }
+    return params.uploadMedia(request as Record<string, unknown>) as any;
+  };
+}
+
+beforeEach(() => {
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-test-state",
+    },
+    media: {
+      loadWebMedia: async () => {
+        throw new Error("unexpected loadWebMedia");
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+});
+
+afterEach(() => {
+  MatrixNativeClient.prototype.diagnostics = originalDiagnostics;
+  MatrixNativeClient.prototype.sendMessage = originalSendMessage;
+  MatrixNativeClient.prototype.uploadMedia = originalUploadMedia;
+});
 
 test("lists the full action surface when all families are enabled", () => {
   const actions = matrixRustActions.listActions({
@@ -126,6 +189,198 @@ test("reduces reaction summaries to agent-facing fields", () => {
       kind: "custom",
       count: 2,
       users: ["@a:example.org", "@b:example.org"],
+    },
+  ]);
+});
+
+test("send action keeps text-only sends on sendMessage", async () => {
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
+  installReadyClient({
+    sendMessage: (request) => {
+      sendMessageCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$text",
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "send",
+    params: {
+      to: "!room:example.org",
+      message: "hello from matrix",
+      replyTo: "$parent",
+      threadId: "$thread",
+    },
+    cfg: baseConfig,
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    channel: "matrix",
+    roomId: "!room:example.org",
+    messageId: "$text",
+  });
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "hello from matrix",
+      replyToId: "$parent",
+      threadId: "$thread",
+    },
+  ]);
+});
+
+test("send action uploads local media with caption and trusted mediaLocalRoots", async () => {
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-test-state",
+    },
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("pdf-bytes"),
+          contentType: "application/pdf",
+          fileName: "report.pdf",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+  installReadyClient({
+    uploadMedia: (request) => {
+      uploadMediaCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$file",
+        filename: String(request.filename),
+        contentType: String(request.contentType),
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "send",
+    params: {
+      to: "!room:example.org",
+      message: "Quarterly report",
+      media: "./out/report.pdf",
+      replyTo: "$parent",
+      threadId: "$thread",
+    },
+    cfg: baseConfig,
+    mediaLocalRoots: ["/tmp/agent-root"],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    channel: "matrix",
+    roomId: "!room:example.org",
+    messageId: "$file",
+  });
+  assert.deepEqual(loadWebMediaCalls, [
+    {
+      mediaUrl: "./out/report.pdf",
+      options: {
+        maxBytes: 20 * 1024 * 1024,
+        localRoots: ["/tmp/agent-root"],
+      },
+    },
+  ]);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "report.pdf",
+      contentType: "application/pdf",
+      dataBase64: Buffer.from("pdf-bytes").toString("base64"),
+      caption: "Quarterly report",
+      replyToId: "$parent",
+      threadId: "$thread",
+    },
+  ]);
+});
+
+test("send action accepts attachment-only sends via filePath alias", async () => {
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-test-state",
+    },
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("image-bytes"),
+          contentType: "image/png",
+          fileName: "render.png",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+  installReadyClient({
+    uploadMedia: (request) => {
+      uploadMediaCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$media-only",
+        filename: String(request.filename),
+        contentType: String(request.contentType),
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "send",
+    params: {
+      to: "!room:example.org",
+      filePath: "./out/render.png",
+    },
+    cfg: baseConfig,
+    mediaLocalRoots: ["/tmp/agent-root"],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    channel: "matrix",
+    roomId: "!room:example.org",
+    messageId: "$media-only",
+  });
+  assert.deepEqual(loadWebMediaCalls, [
+    {
+      mediaUrl: "./out/render.png",
+      options: {
+        maxBytes: 20 * 1024 * 1024,
+        localRoots: ["/tmp/agent-root"],
+      },
+    },
+  ]);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "render.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("image-bytes").toString("base64"),
+      caption: undefined,
+      replyToId: undefined,
+      threadId: undefined,
     },
   ]);
 });

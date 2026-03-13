@@ -6,6 +6,7 @@ import {
   type ChannelMessageActionContext,
 } from "openclaw/plugin-sdk/matrix";
 import { resolveMatrixRustAccount } from "./matrix/accounts.js";
+import { sendMatrixMedia } from "./matrix/inbound.js";
 import type { CoreConfig, MatrixReactionSummary, ResolvedMatrixAccount } from "./types.js";
 
 export const matrixRustActions: ChannelMessageActionAdapter = {
@@ -46,10 +47,7 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
       return await handleNonSendAction(ctx);
     }
     const to = readStringParam(ctx.params, "to", { required: true });
-    const text = readStringParam(ctx.params, "message", {
-      required: true,
-      allowEmpty: true,
-    });
+    const mediaUrl = resolveSendMediaUrl(ctx.params);
     const replyToId = readStringParam(ctx.params, "replyTo");
     const threadId = readStringParam(ctx.params, "threadId");
     const account = resolveMatrixRustAccount({
@@ -57,6 +55,28 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
       accountId: ctx.accountId,
     });
     const client = await ensureStartedClient(account);
+    if (mediaUrl) {
+      const result = await sendMatrixMedia({
+        account,
+        client,
+        to,
+        mediaUrl,
+        text: resolveOptionalSendMessage(ctx.params),
+        mediaLocalRoots: ctx.mediaLocalRoots,
+        replyToId: replyToId ?? undefined,
+        threadId: threadId ?? undefined,
+      });
+      return {
+        ok: true,
+        channel: "matrix",
+        roomId: result.to,
+        messageId: result.messageId,
+      };
+    }
+    const text = readStringParam(ctx.params, "message", {
+      required: true,
+      allowEmpty: true,
+    });
     const result = client.sendMessage({
       roomId: to,
       text,
@@ -104,6 +124,25 @@ function resolveRoomId(params: Record<string, unknown>, required = true): string
     return readStringParam(params, "to") ?? "";
   }
   return readStringParam(params, "to", { required: true });
+}
+
+function resolveOptionalSendMessage(params: Record<string, unknown>): string | undefined {
+  const raw = params.message;
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function resolveSendMediaUrl(params: Record<string, unknown>): string | undefined {
+  const candidates = [params.media, params.mediaUrl, params.path, params.filePath];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
 }
 
 async function handleNonSendAction(
