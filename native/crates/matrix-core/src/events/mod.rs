@@ -245,6 +245,7 @@ pub async fn normalize_inbound_event(
         room_alias,
         chat_type,
         body: event.content.body().to_string(),
+        msgtype: Some(event.content.msgtype.msgtype().to_string()),
         formatted_body: formatted_body(&event.content.msgtype),
         mentions: event.content.mentions.as_ref().map(|mentions| MatrixInboundMentions {
             user_ids: (!mentions.user_ids.is_empty())

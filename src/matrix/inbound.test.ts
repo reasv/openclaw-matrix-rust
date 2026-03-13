@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildMatrixInboundPresentation,
   detectExplicitMention,
   extractMatrixCustomEmojiUsageFromFormattedBody,
   resolveGroupPolicy,
 } from "./inbound.js";
+import {
+  renderMatrixFormattedBody,
+  resolveMatrixBodyForAgent,
+  resolveMatrixInboundSenderLabel,
+  resolveMatrixReadableBody,
+} from "./inbound-format.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 
 test("extracts custom emoji regardless of attribute order", () => {
@@ -92,4 +99,93 @@ test("inherits matrix room policy from channel defaults when account policy is u
   };
 
   assert.equal(resolveGroupPolicy({ cfg, account }), "open");
+});
+
+test("renders formatted bodies with custom emoji placeholders", () => {
+  assert.deepEqual(
+    renderMatrixFormattedBody(
+      'hello <img data-mx-emoticon src="mxc://matrix.example.org/party" alt=":party_parrot:">',
+    ),
+    {
+      text: "hello :party_parrot:",
+      hasCustomEmoji: true,
+    },
+  );
+});
+
+test("builds readable matrix bodies for current inbound messages", () => {
+  assert.equal(
+    resolveMatrixReadableBody({
+      body: "mxc://matrix.example.org/party",
+      formattedBody:
+        'hello <img data-mx-emoticon src="mxc://matrix.example.org/party" alt=":party_parrot:">',
+      msgtype: "m.text",
+    }),
+    "hello :party_parrot:",
+  );
+  assert.equal(
+    resolveMatrixReadableBody({
+      body: "waves",
+      msgtype: "m.emote",
+    }),
+    "/me waves",
+  );
+});
+
+test("labels group messages for BodyForAgent", () => {
+  const senderLabel = resolveMatrixInboundSenderLabel({
+    senderName: "Bu",
+    senderId: "@bu:matrix.example.org",
+  });
+  assert.equal(senderLabel, "Bu (bu)");
+  assert.equal(
+    resolveMatrixBodyForAgent({
+      isDirectMessage: false,
+      bodyText: "show me my commits",
+      senderLabel,
+    }),
+    "Bu (bu): show me my commits",
+  );
+});
+
+test("stores readable BodyForAgent and enveloped Body for group thread messages", () => {
+  const event: MatrixInboundEvent = {
+    roomId: "!room:example.org",
+    eventId: "$event",
+    senderId: "@bu:matrix.example.org",
+    senderName: "Bu",
+    roomName: "Infra",
+    roomAlias: "#infra:matrix.example.org",
+    chatType: "thread",
+    body: "mxc://matrix.example.org/party",
+    msgtype: "m.text",
+    formattedBody:
+      'hello <img data-mx-emoticon src="mxc://matrix.example.org/party" alt=":party_parrot:">',
+    mentions: {
+      userIds: ["@bot:example.org"],
+    },
+    threadRootId: "$thread-root",
+    timestamp: new Date().toISOString(),
+    media: [],
+  };
+  const presentation = buildMatrixInboundPresentation({
+    event,
+    isDirectMessage: false,
+    conversationLabel: "Infra",
+    previewTextBlocks: [],
+    eventTimestamp: Date.now(),
+    previousTimestamp: 123,
+    envelopeOptions: {},
+    formatInboundEnvelope: (params) => `formatted:${params.senderLabel}:${params.body}`,
+  });
+
+  assert.equal(presentation.senderUsername, "bu");
+  assert.equal(presentation.senderLabel, "Bu (bu)");
+  assert.equal(presentation.baseBodyText, "hello :party_parrot:");
+  assert.equal(presentation.bodyForAgent, "Bu (bu): hello :party_parrot:");
+  assert.match(presentation.body, /^formatted:Bu \(bu\):hello :party_parrot:/);
+  assert.match(
+    presentation.body,
+    /\[matrix event id: \$event room: !room:example\.org thread: \$thread-root\]/,
+  );
 });

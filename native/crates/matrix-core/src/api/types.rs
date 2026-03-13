@@ -170,6 +170,7 @@ pub struct MatrixInboundEvent {
     pub room_alias: Option<String>,
     pub chat_type: MatrixChatType,
     pub body: String,
+    pub msgtype: Option<String>,
     pub formatted_body: Option<String>,
     pub mentions: Option<MatrixInboundMentions>,
     pub reply_to_id: Option<String>,

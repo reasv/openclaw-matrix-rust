@@ -29,6 +29,13 @@ import {
   resolveMatrixAllowListMatch,
   resolveMatrixAllowListMatches,
 } from "./allowlist.js";
+import {
+  buildMatrixEnrichedBodyText,
+  resolveMatrixBodyForAgent,
+  resolveMatrixInboundSenderLabel,
+  resolveMatrixReadableBody,
+  resolveMatrixSenderUsername,
+} from "./inbound-format.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_ROOM_HISTORY_MAX_ENTRIES = 30;
@@ -185,6 +192,93 @@ export function detectExplicitMention(
     return false;
   }
   return event.mentions?.userIds?.includes(diagnosticsUserId) ?? false;
+}
+
+export function buildMatrixInboundPresentation(params: {
+  event: Pick<
+    MatrixInboundEvent,
+    | "senderId"
+    | "senderName"
+    | "body"
+    | "msgtype"
+    | "formattedBody"
+    | "roomId"
+    | "eventId"
+    | "threadRootId"
+    | "replyToId"
+  >;
+  isDirectMessage: boolean;
+  conversationLabel: string;
+  replyToBody?: string;
+  replyToSender?: string;
+  previewTextBlocks: string[];
+  eventTimestamp?: number;
+  previousTimestamp?: number;
+  envelopeOptions?: unknown;
+  formatInboundEnvelope: (params: {
+    channel: string;
+    from: string;
+    timestamp?: number;
+    previousTimestamp?: number;
+    envelope?: unknown;
+    body: string;
+    chatType: "direct" | "channel";
+    senderLabel: string;
+  }) => string;
+}): {
+  senderName: string;
+  senderUsername?: string;
+  senderLabel: string;
+  baseBodyText: string;
+  bodyText: string;
+  body: string;
+  bodyForAgent: string;
+} {
+  const senderName = params.event.senderName ?? params.event.senderId;
+  const senderUsername = resolveMatrixSenderUsername(params.event.senderId);
+  const senderLabel = resolveMatrixInboundSenderLabel({
+    senderName,
+    senderId: params.event.senderId,
+    senderUsername,
+  });
+  const baseBodyText = resolveMatrixReadableBody({
+    body: params.event.body,
+    formattedBody: params.event.formattedBody,
+    msgtype: params.event.msgtype,
+  });
+  const bodyText = buildMatrixEnrichedBodyText({
+    baseBodyText,
+    replyToId: params.event.replyToId,
+    replyToBody: params.replyToBody,
+    replyToSender: params.replyToSender,
+    previewTextBlocks: params.previewTextBlocks,
+  });
+  const textWithId = params.event.threadRootId
+    ? `${bodyText}\n[matrix event id: ${params.event.eventId} room: ${params.event.roomId} thread: ${params.event.threadRootId}]`
+    : `${bodyText}\n[matrix event id: ${params.event.eventId} room: ${params.event.roomId}]`;
+  const body = params.formatInboundEnvelope({
+    channel: "Matrix",
+    from: params.conversationLabel,
+    timestamp: Number.isFinite(params.eventTimestamp) ? params.eventTimestamp : undefined,
+    previousTimestamp: params.previousTimestamp,
+    envelope: params.envelopeOptions,
+    body: textWithId,
+    chatType: params.isDirectMessage ? "direct" : "channel",
+    senderLabel,
+  });
+  return {
+    senderName,
+    senderUsername,
+    senderLabel,
+    baseBodyText,
+    bodyText,
+    body,
+    bodyForAgent: resolveMatrixBodyForAgent({
+      isDirectMessage: params.isDirectMessage,
+      bodyText,
+      senderLabel,
+    }),
+  };
 }
 
 export function resolveGroupPolicy(params: {
@@ -529,6 +623,11 @@ export async function handleMatrixInboundEvent(params: {
   });
   const explicitMention = detectExplicitMention(event, diagnostics.userId);
   const senderName = event.senderName ?? event.senderId;
+  const baseBodyText = resolveMatrixReadableBody({
+    body: event.body,
+    formattedBody: event.formattedBody,
+    msgtype: event.msgtype,
+  });
   let replySummary: MatrixMessageSummary | null = null;
   if (event.replyToId) {
     try {
@@ -544,7 +643,6 @@ export async function handleMatrixInboundEvent(params: {
   }
   const replyToBody = replySummary?.body?.trim() || undefined;
   const replyToSender = replySummary?.sender?.trim() || undefined;
-  const baseBodyText = event.body.trim();
   let previewTextBlocks: string[] = [];
   let previewMedia: Array<{ path: string; contentType?: string }> = [];
   try {
@@ -564,19 +662,13 @@ export async function handleMatrixInboundEvent(params: {
       `[matrix:${account.accountId}] preview resolution failed for ${event.eventId}: ${String(err)}`,
     );
   }
-  const bodyText = [
+  const historyBodyText = buildMatrixEnrichedBodyText({
     baseBodyText,
-    ...(replyToBody
-      ? [
-          `[Replying to ${replyToSender ?? "Unknown"}${event.replyToId ? ` id:${event.replyToId}` : ""}]`,
-          replyToBody,
-        ]
-      : []),
-    ...previewTextBlocks,
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+    replyToId: event.replyToId,
+    replyToBody,
+    replyToSender,
+    previewTextBlocks,
+  });
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
     await resolveMatrixAccessState({
       isDirectMessage,
@@ -693,7 +785,7 @@ export async function handleMatrixInboundEvent(params: {
     sessionKey: route.sessionKey,
     event: {
       ...event,
-      body: bodyText,
+      body: historyBodyText,
     },
     maxEntries: resolveRoomHistoryMaxEntries(account),
   });
@@ -708,12 +800,35 @@ export async function handleMatrixInboundEvent(params: {
     ...previewMedia,
   ];
   const conversationLabel = isDirectMessage
-    ? senderName
+    ? (event.senderName ?? event.senderId)
     : (event.roomName ?? event.roomAlias ?? event.roomId);
   const threadTarget = resolveThreadTarget(account, event);
+  const storePath = runtime.channel.session.resolveStorePath((cfg as any).session?.store, {
+    agentId: route.agentId,
+  });
+  const previousTimestamp = runtime.channel.session.readSessionUpdatedAt?.({
+    storePath,
+    sessionKey: route.sessionKey,
+  });
+  const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions?.(cfg);
+  const presentation = buildMatrixInboundPresentation({
+    event,
+    isDirectMessage,
+    conversationLabel,
+    replyToBody,
+    replyToSender,
+    previewTextBlocks,
+    eventTimestamp,
+    previousTimestamp,
+    envelopeOptions,
+    formatInboundEnvelope: runtime.channel.reply.formatInboundEnvelope,
+  });
+  const senderUsername = presentation.senderUsername;
+  const bodyText = presentation.bodyText;
+  const body = presentation.body;
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-    Body: bodyText,
-    BodyForAgent: bodyText,
+    Body: body,
+    BodyForAgent: presentation.bodyForAgent,
     InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
     RawBody: baseBodyText,
     CommandBody: baseBodyText,
@@ -725,6 +840,7 @@ export async function handleMatrixInboundEvent(params: {
     ConversationLabel: conversationLabel,
     SenderName: senderName,
     SenderId: event.senderId,
+    SenderUsername: senderUsername,
     WasMentioned: isDirectMessage ? undefined : effectiveWasMentioned,
     Provider: "matrix",
     Surface: "matrix",
@@ -750,9 +866,6 @@ export async function handleMatrixInboundEvent(params: {
     LinkPreviews: previewTextBlocks.length > 0 ? previewTextBlocks : undefined,
   });
 
-  const storePath = runtime.channel.session.resolveStorePath((cfg as any).session?.store, {
-    agentId: route.agentId,
-  });
   await runtime.channel.session.recordInboundSession({
     storePath,
     sessionKey: ctxPayload.SessionKey ?? route.sessionKey,

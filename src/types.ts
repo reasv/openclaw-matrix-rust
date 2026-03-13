@@ -226,6 +226,7 @@ export type MatrixInboundEvent = {
   roomAlias?: string;
   chatType: MatrixChatType;
   body: string;
+  msgtype?: string;
   formattedBody?: string;
   mentions?: MatrixInboundMentions;
   replyToId?: string;
