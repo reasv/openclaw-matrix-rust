@@ -6,7 +6,7 @@ import {
   type ChannelMessageActionContext,
 } from "openclaw/plugin-sdk/matrix";
 import { resolveMatrixRustAccount } from "./matrix/accounts.js";
-import type { CoreConfig, ResolvedMatrixAccount } from "./types.js";
+import type { CoreConfig, MatrixReactionSummary, ResolvedMatrixAccount } from "./types.js";
 
 export const matrixRustActions: ChannelMessageActionAdapter = {
   listActions: ({ cfg }) => {
@@ -75,6 +75,24 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
 async function ensureStartedClient(account: ResolvedMatrixAccount) {
   const { ensureMatrixClientStarted } = await import("./channel.js");
   return ensureMatrixClientStarted(account);
+}
+
+export function summarizeReactionsForTool(
+  reactions: MatrixReactionSummary[],
+): Array<{
+  display: string;
+  shortcode?: string;
+  kind: MatrixReactionSummary["kind"];
+  count: number;
+  users: string[];
+}> {
+  return reactions.map((reaction) => ({
+    display: reaction.display,
+    shortcode: reaction.shortcode,
+    kind: reaction.kind,
+    count: reaction.count,
+    users: reaction.users,
+  }));
 }
 
 function resolveRoomId(params: Record<string, unknown>, required = true): string {
@@ -149,11 +167,13 @@ async function handleNonSendAction(
     const limit = readNumberParam(ctx.params, "limit", { integer: true }) ?? undefined;
     return {
       ok: true,
-      reactions: client.listReactions({
-        roomId,
-        messageId,
-        limit,
-      }),
+      reactions: summarizeReactionsForTool(
+        client.listReactions({
+          roomId,
+          messageId,
+          limit,
+        }),
+      ),
     };
   }
 

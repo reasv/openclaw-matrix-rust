@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { matrixRustActions } from "./actions.js";
-import type { CoreConfig } from "./types.js";
+import { matrixRustActions, summarizeReactionsForTool } from "./actions.js";
+import type { CoreConfig, MatrixReactionSummary } from "./types.js";
 
 const baseConfig: CoreConfig = {
   channels: {
@@ -103,4 +103,29 @@ test("rejects disabled pin actions before starting the native client", async () 
     }),
     /Matrix pins are disabled\./,
   );
+});
+
+test("reduces reaction summaries to agent-facing fields", () => {
+  const reduced = summarizeReactionsForTool([
+    {
+      key: "mxc://example.org/blobwave",
+      normalizedKey: "mxc://example.org/blobwave",
+      display: ":blobwave:",
+      kind: "custom",
+      shortcode: ":blobwave:",
+      count: 2,
+      users: ["@a:example.org", "@b:example.org"],
+      rawKeys: ["mxc://example.org/blobwave"],
+    } satisfies MatrixReactionSummary,
+  ]);
+
+  assert.deepEqual(reduced, [
+    {
+      display: ":blobwave:",
+      shortcode: ":blobwave:",
+      kind: "custom",
+      count: 2,
+      users: ["@a:example.org", "@b:example.org"],
+    },
+  ]);
 });
