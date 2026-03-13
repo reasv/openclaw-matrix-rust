@@ -15,88 +15,6 @@ The result is a Matrix connector meant for real OpenClaw usage on encrypted home
 
 Use this project when you want OpenClaw to operate as a Matrix bot through a Rust-backed native core instead of a JS-only Matrix stack.
 
-## Architecture
-
-The repository is a single plugin project with two layers.
-
-### TypeScript layer
-
-The TypeScript side is the OpenClaw shell:
-
-- registers the `matrix` channel with OpenClaw
-- defines and validates config
-- maps config into the native contract
-- handles routing, access policy, mention gating, and reply orchestration
-- persists downloaded media through OpenClaw APIs
-- exposes OpenClaw-facing actions and tools
-
-Relevant files:
-
-- `index.ts`
-- `src/channel.ts`
-- `src/actions.ts`
-- `src/config-schema.ts`
-- `src/matrix/`
-
-### Rust layer
-
-The Rust side is the Matrix core, built with `matrix-sdk` and exported to Node through `napi-rs`.
-
-It owns:
-
-- login and session restore
-- same-device reuse across restart
-- persistent state and crypto stores
-- cross-signing recovery and backup enablement
-- sync loop and normalized event emission
-- reply/thread relation handling
-- media upload and download
-- custom emoji catalog logic
-- reactions
-- link previews
-- message and pin actions
-
-Relevant files:
-
-- `native/crates/matrix-core/src/lib.rs`
-- `native/crates/matrix-core/src/client/`
-- `native/crates/matrix-core/src/auth/`
-- `native/crates/matrix-core/src/crypto/`
-- `native/crates/matrix-core/src/events/`
-- `native/crates/matrix-core/src/media/`
-- `native/crates/matrix-core/src/emoji/`
-- `native/crates/matrix-core/src/reactions/`
-- `native/crates/matrix-core/src/previews/`
-- `native/crates/matrix-core/src/state/`
-
-### Repository structure
-
-```text
-openclaw-matrix-rust/
-  index.ts
-  package.json
-  src/
-    channel.ts
-    actions.ts
-    config-schema.ts
-    matrix/
-  native/
-    Cargo.toml
-    crates/
-      matrix-core/
-        src/
-          lib.rs
-          auth/
-          client/
-          crypto/
-          events/
-          media/
-          emoji/
-          reactions/
-          previews/
-          state/
-```
-
 ## Prerequisites
 
 You need a Linux system with the following available.
@@ -284,6 +202,147 @@ By default, the plugin stores Matrix state under OpenClaw's plugin state directo
 ```
 
 This contains persisted session data, SQLite SDK stores, crypto state, media cache, and custom emoji state.
+
+## Features
+
+This section lists the behavior this connector actually implements today.
+
+### Encryption and recovery
+
+- End-to-end encrypted Matrix rooms are supported through the Rust `matrix-sdk` core.
+- The connector persists Matrix session, state, and crypto material across restart.
+- The same Matrix device is reused across restart instead of creating a fresh device every boot.
+- If you configure a recovery phrase, the connector restores cross-signing secrets on the live device and validates active key backup during startup.
+
+### OpenClaw conversation behavior
+
+- Mention-gated behavior for group rooms.
+- Buffered room history before a triggering mention, so the first routed message can carry recent context.
+- Direct-message and group-room policy handling through OpenClaw config.
+- Reply and thread-aware routing, including per-room `threadReplies` overrides.
+- Startup grace filtering so stale sync events do not immediately trigger bot replies on boot.
+- Typing-backed reply dispatch and reaction acknowledgements in the OpenClaw flow.
+
+### Messaging and media
+
+- Inbound Matrix messages are normalized into OpenClaw-usable events in the native core.
+- Outbound sends support plain messages, replies, and thread-aware sends.
+- Room target resolution and room join are implemented in the native core.
+- Media upload and download are implemented in Rust, with handoff to OpenClaw on the TS side.
+- Multiple Matrix media types are surfaced into the OpenClaw runtime.
+
+### Custom emoji and reactions
+
+- Inbound formatted HTML is scanned for Matrix custom emoji.
+- Custom emoji observations are persisted in an on-disk catalog with usage statistics.
+- Outbound `:shortcode:` text is resolved to the best known Matrix custom emoji mapping.
+- Reaction keys are normalized consistently.
+- Reactions can be added, removed, and listed.
+- Shortcode-backed custom emoji reactions are supported.
+- Known shortcodes can be listed through actions/tools.
+
+### Link previews
+
+- X/Twitter-family links are normalized and resolved through the FXTwitter preview path.
+- Non-X links are resolved through the homeserver preview path.
+- Preview text and preview media are returned from Rust and injected into the OpenClaw context layer.
+
+### Actions
+
+- `send`
+- `react`
+- `reactions`
+- `emoji-list`
+- `read`
+- `edit`
+- `delete`
+- `pin`
+- `unpin`
+- `list-pins`
+- `member-info`
+- `channel-info`
+
+## Architecture
+
+The repository is a single plugin project with two layers.
+
+### TypeScript layer
+
+The TypeScript side is the OpenClaw shell:
+
+- registers the `matrix` channel with OpenClaw
+- defines and validates config
+- maps config into the native contract
+- handles routing, access policy, mention gating, and reply orchestration
+- persists downloaded media through OpenClaw APIs
+- exposes OpenClaw-facing actions and tools
+
+Relevant files:
+
+- `index.ts`
+- `src/channel.ts`
+- `src/actions.ts`
+- `src/config-schema.ts`
+- `src/matrix/`
+
+### Rust layer
+
+The Rust side is the Matrix core, built with `matrix-sdk` and exported to Node through `napi-rs`.
+
+It owns:
+
+- login and session restore
+- same-device reuse across restart
+- persistent state and crypto stores
+- cross-signing recovery and backup enablement
+- sync loop and normalized event emission
+- reply and thread relation handling
+- media upload and download
+- custom emoji catalog logic
+- reactions
+- link previews
+- message and pin actions
+
+Relevant files:
+
+- `native/crates/matrix-core/src/lib.rs`
+- `native/crates/matrix-core/src/client/`
+- `native/crates/matrix-core/src/auth/`
+- `native/crates/matrix-core/src/crypto/`
+- `native/crates/matrix-core/src/events/`
+- `native/crates/matrix-core/src/media/`
+- `native/crates/matrix-core/src/emoji/`
+- `native/crates/matrix-core/src/reactions/`
+- `native/crates/matrix-core/src/previews/`
+- `native/crates/matrix-core/src/state/`
+
+### Repository structure
+
+```text
+openclaw-matrix-rust/
+  index.ts
+  package.json
+  src/
+    channel.ts
+    actions.ts
+    config-schema.ts
+    matrix/
+  native/
+    Cargo.toml
+    crates/
+      matrix-core/
+        src/
+          lib.rs
+          auth/
+          client/
+          crypto/
+          events/
+          media/
+          emoji/
+          reactions/
+          previews/
+          state/
+```
 
 ## Notes
 
