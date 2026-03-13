@@ -20,7 +20,7 @@ test("lists the full action surface when all families are enabled", () => {
 
   assert.deepEqual(actions, [
     "send",
-    "list-custom-emoji",
+    "emoji-list",
     "react",
     "reactions",
     "read",
@@ -53,7 +53,7 @@ test("omits gated action families from the advertised list", () => {
     },
   });
 
-  assert.deepEqual(actions, ["send", "list-custom-emoji", "channel-info"]);
+  assert.deepEqual(actions, ["send", "emoji-list", "channel-info"]);
 });
 
 test("rejects disabled message actions before starting the native client", async () => {

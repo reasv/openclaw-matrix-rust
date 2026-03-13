@@ -43,7 +43,7 @@ declare module "openclaw/plugin-sdk/matrix" {
 
   export type ChannelMessageActionName =
     | "send"
-    | "list-custom-emoji"
+    | "emoji-list"
     | "react"
     | "reactions"
     | "read"

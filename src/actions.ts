@@ -14,7 +14,7 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
     if (!account.enabled || !account.configured) {
       return [];
     }
-    const output: ChannelMessageActionName[] = ["send", "list-custom-emoji"];
+    const output: ChannelMessageActionName[] = ["send", "emoji-list"];
     if (account.config.actions?.reactions !== false) {
       output.push("react", "reactions");
     }
@@ -101,7 +101,7 @@ async function handleNonSendAction(
   const memberInfoEnabled = account.config.actions?.memberInfo !== false;
   const channelInfoEnabled = account.config.actions?.channelInfo !== false;
 
-  if (ctx.action === "list-custom-emoji") {
+  if (ctx.action === "emoji-list") {
     const client = await ensureStartedClient(account);
     const roomId = resolveRoomId(ctx.params, false);
     const limit = readNumberParam(ctx.params, "limit", { integer: true }) ?? undefined;
