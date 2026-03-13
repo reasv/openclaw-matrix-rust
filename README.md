@@ -122,14 +122,14 @@ Example:
 ```json
 {
   "plugins": {
-    "allow": ["matrix"],
+    "allow": ["matrix-rust"],
     "load": {
       "paths": [
         "/home/you/projects/oclaw/openclaw-matrix-rust"
       ]
     },
     "entries": {
-      "matrix": {
+      "matrix-rust": {
         "enabled": true
       }
     }
@@ -148,6 +148,15 @@ Example:
   }
 }
 ```
+
+Important gotcha:
+
+- the plugin id is `matrix-rust`
+- the channel id is still `matrix`
+- so OpenClaw plugin selection uses `plugins.allow` and `plugins.entries.matrix-rust`
+- but the actual Matrix account config still lives under `channels.matrix`
+
+That split is intentional. It keeps this project as a drop-in Matrix channel replacement without colliding with OpenClaw's bundled `matrix` plugin id.
 
 Useful optional settings include:
 
@@ -348,4 +357,4 @@ openclaw-matrix-rust/
 
 - The project pins Rust `1.93.0`. That is intentional.
 - The native core uses `matrix-sdk 0.16.0` with `bundled-sqlite`, so you do not need a system SQLite development package just to build it.
-- If you are loading this from a local path while OpenClaw also has a bundled Matrix plugin with the same `matrix` id, OpenClaw may log a duplicate-plugin warning during startup. What matters is which plugin actually initializes the Matrix channel at runtime.
+- This project now uses plugin id `matrix-rust`, while continuing to register channel id `matrix`. If you forget that split and enable `plugins.entries.matrix` instead of `plugins.entries.matrix-rust`, OpenClaw will not load this plugin even though your `channels.matrix` config is valid.
