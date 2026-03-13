@@ -184,6 +184,41 @@ function detectExplicitMention(
   );
 }
 
+export function extractMatrixCustomEmojiUsageFromFormattedBody(
+  formattedBody: string,
+): Array<{ mxcUrl: string; shortcode: string }> {
+  const imgTagPattern = /<img\b[^>]*>/gis;
+  const attrPattern =
+    /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gis;
+  const entries = new Map<string, { mxcUrl: string; shortcode: string }>();
+
+  for (const match of formattedBody.matchAll(imgTagPattern)) {
+    const rawTag = match[0] ?? "";
+    if (!/data-mx-emoticon/i.test(rawTag)) {
+      continue;
+    }
+
+    let mxcUrl = "";
+    let shortcode = "";
+    for (const captures of rawTag.matchAll(attrPattern)) {
+      const name = (captures[1] ?? "").toLowerCase();
+      const value = captures[2] ?? captures[3] ?? "";
+      if ((name === "src" || name === "data-mx-src") && !mxcUrl) {
+        mxcUrl = value;
+      } else if (name === "alt" && !shortcode) {
+        shortcode = value;
+      }
+    }
+
+    if (!mxcUrl.startsWith("mxc://") || !shortcode.startsWith(":")) {
+      continue;
+    }
+    entries.set(`${shortcode}\u0000${mxcUrl}`, { mxcUrl, shortcode });
+  }
+
+  return [...entries.values()];
+}
+
 async function recordInboundEmojiUsage(params: {
   client: MatrixNativeClient;
   event: MatrixInboundEvent;
@@ -193,23 +228,14 @@ async function recordInboundEmojiUsage(params: {
   if (!formattedBody) {
     return;
   }
-  const matches = Array.from(
-    formattedBody.matchAll(
-      /<img\b[^>]*data-mx-emoticon[^>]*src=(?:"([^"]+)"|'([^']+)')[^>]*alt=(?:"(:[^"]+:)"|'(:[^']+:)')[^>]*>/gi,
-    ),
-  );
-  if (matches.length === 0) {
+  const emoji = extractMatrixCustomEmojiUsageFromFormattedBody(formattedBody);
+  if (emoji.length === 0) {
     return;
   }
   client.recordCustomEmojiUsage({
     roomId: event.roomId,
     observedAtMs: Date.parse(event.timestamp),
-    emoji: matches
-      .map((match) => ({
-        mxcUrl: match[1] ?? match[2] ?? "",
-        shortcode: match[3] ?? match[4] ?? "",
-      }))
-      .filter((entry) => entry.mxcUrl.startsWith("mxc://") && entry.shortcode.startsWith(":")),
+    emoji,
   });
 }
 
@@ -618,12 +644,11 @@ export async function handleMatrixInboundEvent(params: {
     },
     maxEntries: resolveRoomHistoryMaxEntries(account),
   });
+  await recordInboundEmojiUsage({ client, event });
   if (isRoom && requireMention && !wasMentioned && !shouldBypassMention) {
     return;
   }
   const inboundHistory = consumeInboundHistory(route.sessionKey);
-
-  await recordInboundEmojiUsage({ client, event });
 
   const media = [
     ...(await saveInboundMedia({ account, client, event })),
