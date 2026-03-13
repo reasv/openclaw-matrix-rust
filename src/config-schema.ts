@@ -47,6 +47,7 @@ const accountSchema = z.object({
   replyToMode: z.enum(["off", "first", "all"]).optional(),
   threadReplies: z.enum(["off", "inbound", "always"]).optional(),
   textChunkLimit: z.number().int().positive().optional(),
+  roomHistoryMaxEntries: z.number().int().min(0).optional(),
   mediaMaxMb: z.number().positive().optional(),
   xPreviewViaFxTwitter: z.boolean().optional(),
   autoJoin: z.enum(["always", "allowlist", "off"]).optional(),

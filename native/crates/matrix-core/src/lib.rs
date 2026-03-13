@@ -22,7 +22,7 @@ use crate::{
         MatrixDownloadMediaRequest, MatrixJoinRequest, MatrixListEmojiRequest,
         MatrixListReactionsRequest, MatrixMemberInfoRequest, MatrixReactRequest,
         MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest, MatrixSendRequest,
-        MatrixUploadMediaRequest,
+        MatrixTypingRequest, MatrixUploadMediaRequest,
     },
     client::MatrixCoreService,
 };
@@ -204,5 +204,13 @@ impl MatrixCoreClient {
         let inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
         let result = inner.resolve_link_previews(request).map_err(to_napi_error)?;
         serde_json::to_string(&result).map_err(|err| napi::Error::from_reason(err.to_string()))
+    }
+
+    #[napi(js_name = "setTyping")]
+    pub fn set_typing(&self, request_json: String) -> napi::Result<()> {
+        let request: MatrixTypingRequest =
+            serde_json::from_str(&request_json).map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        let mut inner = self.inner.lock().map_err(|_| napi::Error::from_reason("matrix client mutex poisoned"))?;
+        inner.set_typing(request).map_err(to_napi_error)
     }
 }

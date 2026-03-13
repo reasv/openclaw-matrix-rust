@@ -12,6 +12,6 @@ pub use types::{
     MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
     MatrixReactionInfo, MatrixReactionKeyKind, MatrixReactionSummary, MatrixResolveTargetRequest,
     MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixStateLayout,
-    MatrixSyncState, MatrixUploadMediaRequest, MatrixUploadMediaResult,
+    MatrixSyncState, MatrixTypingRequest, MatrixUploadMediaRequest, MatrixUploadMediaResult,
     MatrixVerificationState, NativeLifecycleStage, StoredSession,
 };

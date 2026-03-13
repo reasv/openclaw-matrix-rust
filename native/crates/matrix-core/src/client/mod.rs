@@ -40,6 +40,7 @@ use crate::{
         MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
         MatrixReactionSummary, MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest,
         MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixSyncState,
+        MatrixTypingRequest,
         MatrixUploadMediaRequest, MatrixUploadMediaResult, MatrixVerificationState,
         NativeLifecycleStage, StoredSession,
     },
@@ -495,6 +496,19 @@ impl MatrixCoreService {
             .ok_or_else(|| MatrixError::State("matrix session is unavailable".to_string()))?;
         self.runtime
             .block_on(previews::resolve_link_previews(config, &access_token, &request))
+    }
+
+    pub fn set_typing(&mut self, request: MatrixTypingRequest) -> MatrixResult<()> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        let (room, _) = self
+            .runtime
+            .block_on(resolve_room_for_send(&client, &request.room_id))?;
+        self.runtime
+            .block_on(async { room.typing_notice(request.typing).await })?;
+        Ok(())
     }
 
     fn release_client(&self, client: Client) {

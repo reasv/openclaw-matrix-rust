@@ -1,5 +1,15 @@
 import type { MatrixNativeClient } from "./adapter/native-client.js";
 import { getMatrixRustRuntime } from "../runtime.js";
+import {
+  createReplyPrefixOptions,
+  createScopedPairingAccess,
+  createTypingCallbacks,
+  dispatchReplyFromConfigWithSettledDispatcher,
+  evaluateGroupRouteAccessForPolicy,
+  formatAllowlistMatchMeta,
+  logInboundDrop,
+  resolveControlCommandGate,
+} from "openclaw/plugin-sdk/matrix";
 import type {
   CoreConfig,
   MatrixInboundEvent,
@@ -7,8 +17,19 @@ import type {
   MatrixRoomConfig,
   MatrixThreadRepliesMode,
 } from "../types.js";
+import {
+  enforceMatrixDirectMessageAccess,
+  resolveMatrixAccessState,
+} from "./access-policy.js";
+import {
+  normalizeMatrixAllowList,
+  resolveMatrixAllowListMatch,
+  resolveMatrixAllowListMatches,
+} from "./allowlist.js";
+import { resolveMatrixRoomConfig } from "./rooms.js";
 
-const MAX_INBOUND_HISTORY = 12;
+const DEFAULT_ROOM_HISTORY_MAX_ENTRIES = 30;
+const DEFAULT_STARTUP_GRACE_MS = 5_000;
 const inboundHistories = new Map<
   string,
   Array<{ sender: string; body: string; timestamp?: number }>
@@ -50,20 +71,25 @@ function resolveRoomConfig(
   account: ResolvedMatrixAccount,
   event: MatrixInboundEvent,
 ): MatrixRoomConfig | undefined {
-  const rooms = account.config.rooms ?? account.config.groups;
-  if (!rooms) {
-    return undefined;
-  }
-  return (
-    rooms[event.roomId] ??
-    (event.roomAlias ? rooms[event.roomAlias] : undefined)
+  return resolveMatrixRoomConfig({
+    rooms: account.config.rooms ?? account.config.groups,
+    roomId: event.roomId,
+    aliases: event.roomAlias ? [event.roomAlias] : [],
+  }).config;
+}
+
+function resolveRoomHistoryMaxEntries(account: ResolvedMatrixAccount): number {
+  return Math.max(
+    0,
+    Math.floor(account.config.roomHistoryMaxEntries ?? DEFAULT_ROOM_HISTORY_MAX_ENTRIES),
   );
 }
 
-function appendInboundHistory(params: {
+function bufferInboundHistory(params: {
   sessionKey: string;
   event: MatrixInboundEvent;
-}): Array<{ sender: string; body: string; timestamp?: number }> {
+  maxEntries: number;
+}): void {
   const entry = {
     sender: params.event.senderName ?? params.event.senderId,
     body: params.event.body.trim(),
@@ -71,9 +97,16 @@ function appendInboundHistory(params: {
   };
   const next = [...(inboundHistories.get(params.sessionKey) ?? []), entry]
     .filter((item) => item.body)
-    .slice(-MAX_INBOUND_HISTORY);
+    .slice(-params.maxEntries);
   inboundHistories.set(params.sessionKey, next);
-  return next.slice(0, -1);
+}
+
+function consumeInboundHistory(
+  sessionKey: string,
+): Array<{ sender: string; body: string; timestamp?: number }> {
+  const buffered = inboundHistories.get(sessionKey) ?? [];
+  inboundHistories.delete(sessionKey);
+  return buffered.slice(0, -1);
 }
 
 function resolveThreadRepliesMode(
@@ -102,13 +135,12 @@ function resolveThreadTarget(
 }
 
 function shouldRequireMention(
-  account: ResolvedMatrixAccount,
-  event: MatrixInboundEvent,
+  room: MatrixRoomConfig | undefined,
+  isDirectMessage: boolean,
 ): boolean {
-  if (event.chatType === "direct") {
+  if (isDirectMessage) {
     return false;
   }
-  const room = resolveRoomConfig(account, event);
   if (room?.autoReply === true) {
     return false;
   }
@@ -119,6 +151,24 @@ function shouldRequireMention(
     return room.requireMention;
   }
   return true;
+}
+
+function shouldOverrideDmToGroup(params: {
+  isDirectMessage: boolean;
+  roomConfigInfo:
+    | {
+        config?: MatrixRoomConfig;
+        allowed: boolean;
+        matchSource?: string;
+      }
+    | undefined;
+}): boolean {
+  return (
+    params.isDirectMessage === true &&
+    params.roomConfigInfo?.config !== undefined &&
+    params.roomConfigInfo.allowed === true &&
+    params.roomConfigInfo.matchSource === "direct"
+  );
 }
 
 function detectExplicitMention(
@@ -346,11 +396,48 @@ export async function handleMatrixInboundEvent(params: {
     return;
   }
 
-  if (event.chatType !== "direct" && account.config.groupPolicy === "blocked") {
+  const eventTimestamp = Date.parse(event.timestamp);
+  const startupTimestamp = diagnostics.startedAt ? Date.parse(diagnostics.startedAt) : NaN;
+  if (
+    Number.isFinite(eventTimestamp) &&
+    Number.isFinite(startupTimestamp) &&
+    eventTimestamp < startupTimestamp - DEFAULT_STARTUP_GRACE_MS
+  ) {
     return;
   }
 
-  const isDirectMessage = event.chatType === "direct";
+  const allowlistOnly = account.config.allowlistOnly === true;
+  const groupPolicyRaw = account.config.groupPolicy === "blocked" ? "disabled" : (account.config.groupPolicy ?? "allowlist");
+  const groupPolicy =
+    allowlistOnly && groupPolicyRaw === "open" ? "allowlist" : groupPolicyRaw;
+  const dmEnabled = account.config.dm?.enabled ?? true;
+  const dmPolicyRaw = account.config.dm?.policy ?? "pairing";
+  const dmPolicy =
+    allowlistOnly && dmPolicyRaw !== "disabled" ? "allowlist" : dmPolicyRaw;
+  const roomConfigInfo = resolveMatrixRoomConfig({
+    rooms: account.config.rooms ?? account.config.groups,
+    roomId: event.roomId,
+    aliases: event.roomAlias ? [event.roomAlias] : [],
+  });
+  let isDirectMessage = event.chatType === "direct";
+  if (shouldOverrideDmToGroup({ isDirectMessage, roomConfigInfo })) {
+    isDirectMessage = false;
+  }
+  const isRoom = !isDirectMessage;
+  const roomConfig = isRoom ? roomConfigInfo.config : undefined;
+
+  if (isRoom) {
+    const routeAccess = evaluateGroupRouteAccessForPolicy({
+      groupPolicy: groupPolicy as "open" | "allowlist" | "disabled",
+      routeAllowlistConfigured: Boolean(roomConfigInfo.allowlistConfigured),
+      routeMatched: Boolean(roomConfigInfo.config),
+      routeEnabled: roomConfigInfo.allowed,
+    });
+    if (!routeAccess.allowed) {
+      return;
+    }
+  }
+
   const baseRoute = runtime.channel.routing.resolveAgentRoute({
     cfg,
     channel: "matrix",
@@ -376,8 +463,14 @@ export async function handleMatrixInboundEvent(params: {
       : routeSession.sessionKey,
   };
 
+  const pairing = createScopedPairingAccess({
+    core: runtime,
+    channel: "matrix",
+    accountId: account.accountId,
+  });
   const mentionRegexes = runtime.channel.mentions.buildMentionRegexes(cfg, route.agentId);
   const explicitMention = detectExplicitMention(event, diagnostics.userId);
+  const senderName = event.senderName ?? event.senderId;
   const baseBodyText = event.body.trim();
   let previewTextBlocks: string[] = [];
   let previewMedia: Array<{ path: string; contentType?: string }> = [];
@@ -399,24 +492,136 @@ export async function handleMatrixInboundEvent(params: {
     );
   }
   const bodyText = [baseBodyText, ...previewTextBlocks].filter(Boolean).join("\n").trim();
+  const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
+    await resolveMatrixAccessState({
+      isDirectMessage,
+      resolvedAccountId: pairing.accountId,
+      dmPolicy: dmPolicy as "open" | "pairing" | "allowlist" | "disabled",
+      groupPolicy: groupPolicy as "open" | "allowlist" | "disabled",
+      allowFrom: account.config.dm?.allowFrom ?? [],
+      groupAllowFrom: account.config.groupAllowFrom ?? [],
+      senderId: event.senderId,
+      readStoreForDmPolicy: pairing.readStoreForDmPolicy,
+    });
+  if (isDirectMessage) {
+    const allowed = await enforceMatrixDirectMessageAccess({
+      dmEnabled,
+      dmPolicy: dmPolicy as "open" | "pairing" | "allowlist" | "disabled",
+      accessDecision: access.decision,
+      senderId: event.senderId,
+      senderName,
+      effectiveAllowFrom,
+      upsertPairingRequest: pairing.upsertPairingRequest,
+      sendPairingReply: async (text) => {
+        client.sendMessage({
+          roomId: event.roomId,
+          text,
+        });
+      },
+      logVerboseMessage: (message) => log?.info?.(message),
+    });
+    if (!allowed) {
+      return;
+    }
+  }
+
+  const roomUsers = roomConfig?.users ?? [];
+  if (isRoom && roomUsers.length > 0) {
+    const userMatch = resolveMatrixAllowListMatch({
+      allowList: normalizeMatrixAllowList(roomUsers),
+      userId: event.senderId,
+    });
+    if (!userMatch.allowed) {
+      log?.debug?.(
+        `[matrix:${account.accountId}] blocked sender ${event.senderId} (${formatAllowlistMatchMeta(userMatch)})`,
+      );
+      return;
+    }
+  }
+  if (isRoom && roomUsers.length === 0 && groupAllowConfigured && access.decision !== "allow") {
+    const groupAllowMatch = resolveMatrixAllowListMatch({
+      allowList: effectiveGroupAllowFrom,
+      userId: event.senderId,
+    });
+    if (!groupAllowMatch.allowed) {
+      log?.debug?.(
+        `[matrix:${account.accountId}] blocked sender ${event.senderId} (${formatAllowlistMatchMeta(groupAllowMatch)})`,
+      );
+      return;
+    }
+  }
+
   const wasMentioned =
-    event.chatType === "direct"
+    isDirectMessage
       ? true
       : runtime.channel.mentions.matchesMentionWithExplicit({
           text: baseBodyText,
           mentionRegexes,
           explicitWasMentioned: explicitMention,
         });
-  const inboundHistory = appendInboundHistory({
+  const allowTextCommands = runtime.channel.commands.shouldHandleTextCommands({
+    cfg,
+    surface: "matrix",
+  });
+  const useAccessGroups = cfg.commands?.useAccessGroups !== false;
+  const senderAllowedForCommands = resolveMatrixAllowListMatches({
+    allowList: effectiveAllowFrom,
+    userId: event.senderId,
+  });
+  const senderAllowedForGroup = groupAllowConfigured
+    ? resolveMatrixAllowListMatches({
+        allowList: effectiveGroupAllowFrom,
+        userId: event.senderId,
+      })
+    : false;
+  const senderAllowedForRoomUsers =
+    isRoom && roomUsers.length > 0
+      ? resolveMatrixAllowListMatches({
+          allowList: normalizeMatrixAllowList(roomUsers),
+          userId: event.senderId,
+        })
+      : false;
+  const hasControlCommandInMessage = runtime.channel.text.hasControlCommand(baseBodyText, cfg);
+  const resolvedCommandGate = resolveControlCommandGate({
+    useAccessGroups,
+    authorizers: [
+      { configured: effectiveAllowFrom.length > 0, allowed: senderAllowedForCommands },
+      { configured: roomUsers.length > 0, allowed: senderAllowedForRoomUsers },
+      { configured: groupAllowConfigured, allowed: senderAllowedForGroup },
+    ],
+    allowTextCommands,
+    hasControlCommand: hasControlCommandInMessage,
+  });
+  if (isRoom && resolvedCommandGate.shouldBlock) {
+    logInboundDrop({
+      log: (message: string) => log?.info?.(message),
+      channel: "matrix",
+      reason: "control command (unauthorized)",
+      target: event.senderId,
+    });
+    return;
+  }
+  const requireMention = shouldRequireMention(roomConfig, isDirectMessage);
+  const shouldBypassMention =
+    allowTextCommands &&
+    isRoom &&
+    requireMention &&
+    !wasMentioned &&
+    !explicitMention &&
+    resolvedCommandGate.commandAuthorized &&
+    hasControlCommandInMessage;
+  bufferInboundHistory({
     sessionKey: route.sessionKey,
     event: {
       ...event,
       body: bodyText,
     },
+    maxEntries: resolveRoomHistoryMaxEntries(account),
   });
-  if (event.chatType !== "direct" && shouldRequireMention(account, event) && !wasMentioned) {
+  if (isRoom && requireMention && !wasMentioned && !shouldBypassMention) {
     return;
   }
+  const inboundHistory = consumeInboundHistory(route.sessionKey);
 
   await recordInboundEmojiUsage({ client, event });
 
@@ -425,29 +630,30 @@ export async function handleMatrixInboundEvent(params: {
     ...previewMedia,
   ];
   const conversationLabel = isDirectMessage
-    ? (event.senderName ?? event.senderId)
+    ? senderName
     : (event.roomName ?? event.roomAlias ?? event.roomId);
+  const threadTarget = resolveThreadTarget(account, event);
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: bodyText,
     BodyForAgent: bodyText,
     InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
-    RawBody: bodyText,
-    CommandBody: bodyText,
+    RawBody: baseBodyText,
+    CommandBody: baseBodyText,
     From: isDirectMessage ? `matrix:${event.senderId}` : `matrix:channel:${event.roomId}`,
     To: `room:${event.roomId}`,
     SessionKey: route.sessionKey,
     AccountId: route.accountId,
-    ChatType: event.chatType,
+    ChatType: threadTarget ? "thread" : isDirectMessage ? "direct" : "channel",
     ConversationLabel: conversationLabel,
-    SenderName: event.senderName,
+    SenderName: senderName,
     SenderId: event.senderId,
-    WasMentioned: event.chatType === "direct" ? undefined : wasMentioned,
+    WasMentioned: isDirectMessage ? undefined : (wasMentioned || shouldBypassMention),
     Provider: "matrix",
     Surface: "matrix",
     MessageSid: event.eventId,
-    ReplyToId: event.replyToId,
-    MessageThreadId: event.threadRootId,
-    Timestamp: Date.parse(event.timestamp),
+    ReplyToId: threadTarget ? undefined : event.replyToId,
+    MessageThreadId: threadTarget,
+    Timestamp: eventTimestamp,
     MediaPath: media[0]?.path,
     MediaPaths: media.length > 0 ? media.map((item) => item.path) : undefined,
     MediaType: media[0]?.contentType,
@@ -456,6 +662,9 @@ export async function handleMatrixInboundEvent(params: {
     MediaUrls: media.length > 0 ? media.map((item) => item.path) : undefined,
     GroupSubject: isDirectMessage ? undefined : conversationLabel,
     GroupChannel: isDirectMessage ? undefined : (event.roomAlias ?? event.roomId),
+    GroupSystemPrompt: isDirectMessage ? undefined : roomConfig?.systemPrompt?.trim() || undefined,
+    CommandAuthorized: resolvedCommandGate.commandAuthorized,
+    CommandSource: "text",
     OriginatingChannel: "matrix",
     OriginatingTo: `room:${event.roomId}`,
     LinkPreviews: previewTextBlocks.length > 0 ? previewTextBlocks : undefined,
@@ -482,10 +691,55 @@ export async function handleMatrixInboundEvent(params: {
     `[matrix:${account.accountId}] inbound ${event.eventId} room=${event.roomId} sender=${event.senderId}`,
   );
 
-  await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx: ctxPayload,
+  const ackReaction = (cfg.messages?.ackReaction ?? "").trim();
+  const ackScope = cfg.messages?.ackReactionScope ?? "group-mentions";
+  const canDetectMention = mentionRegexes.length > 0 || explicitMention;
+  const shouldAckReaction = Boolean(
+    ackReaction &&
+      runtime.channel.reactions?.shouldAckReaction?.({
+        scope: ackScope,
+        isDirect: isDirectMessage,
+        isGroup: isRoom,
+        isMentionableGroup: isRoom,
+        requireMention,
+        canDetectMention,
+        effectiveWasMentioned: wasMentioned || shouldBypassMention,
+        shouldBypassMention,
+      }),
+  );
+  if (shouldAckReaction) {
+    client.reactMessage({
+      roomId: event.roomId,
+      messageId: event.eventId,
+      key: ackReaction,
+    });
+  }
+
+  const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
     cfg,
-    dispatcherOptions: {
+    agentId: route.agentId,
+    channel: "matrix",
+    accountId: route.accountId,
+  });
+  const typingCallbacks = createTypingCallbacks({
+    start: async () => {
+      client.setTyping({ roomId: event.roomId, typing: true });
+    },
+    stop: async () => {
+      client.setTyping({ roomId: event.roomId, typing: false });
+    },
+    onStartError: (err: unknown) => {
+      log?.info?.(`[matrix:${account.accountId}] typing start failed for ${event.roomId}: ${String(err)}`);
+    },
+    onStopError: (err: unknown) => {
+      log?.info?.(`[matrix:${account.accountId}] typing stop failed for ${event.roomId}: ${String(err)}`);
+    },
+  });
+  const { dispatcher, replyOptions, markDispatchIdle } =
+    runtime.channel.reply.createReplyDispatcherWithTyping({
+      ...prefixOptions,
+      humanDelay: runtime.channel.reply.resolveHumanDelayConfig?.(cfg, route.agentId),
+      typingCallbacks,
       deliver: async (payload: {
         text?: string;
         body?: string;
@@ -506,6 +760,32 @@ export async function handleMatrixInboundEvent(params: {
           `[matrix:${account.accountId}] ${info.kind ?? "reply"} failed: ${String(err)}`,
         );
       },
+    });
+
+  const { queuedFinal, counts } = await dispatchReplyFromConfigWithSettledDispatcher({
+    cfg,
+    ctxPayload,
+    dispatcher,
+    onSettled: () => {
+      markDispatchIdle();
+    },
+    replyOptions: {
+      ...replyOptions,
+      skillFilter: roomConfig?.skills,
+      onModelSelected,
     },
   });
+  if (!queuedFinal) {
+    return;
+  }
+  log?.debug?.(
+    `[matrix:${account.accountId}] delivered ${counts.final} reply${counts.final === 1 ? "" : "ies"} to room:${event.roomId}`,
+  );
+  runtime.system.enqueueSystemEvent?.(
+    `Matrix message from ${senderName}: ${baseBodyText.replace(/\s+/g, " ").slice(0, 160)}`,
+    {
+      sessionKey: route.sessionKey,
+      contextKey: `matrix:message:${event.roomId}:${event.eventId || "unknown"}`,
+    },
+  );
 }

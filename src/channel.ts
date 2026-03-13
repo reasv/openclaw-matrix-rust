@@ -24,6 +24,7 @@ import {
 import { resolveNativeConfig } from "./matrix/adapter/config.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
 import { handleMatrixInboundEvent, sendMatrixMedia } from "./matrix/inbound.js";
+import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
 
@@ -148,7 +149,11 @@ function resolveRequireMention(params: {
   if (!roomId) {
     return true;
   }
-  const room = account.config.rooms?.[roomId] ?? account.config.groups?.[roomId];
+  const room = resolveMatrixRoomConfig({
+    rooms: account.config.rooms ?? account.config.groups,
+    roomId,
+    aliases: [],
+  }).config;
   if (room?.requireMention !== undefined) {
     return room.requireMention;
   }
@@ -240,10 +245,11 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
       if (!groupId) {
         return undefined;
       }
-      return (
-        account.config.rooms?.[groupId]?.tools ??
-        account.config.groups?.[groupId]?.tools
-      );
+      return resolveMatrixRoomConfig({
+        rooms: account.config.rooms ?? account.config.groups,
+        roomId: groupId,
+        aliases: [],
+      }).config?.tools;
     },
   },
   threading: {

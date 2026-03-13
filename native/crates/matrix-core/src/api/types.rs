@@ -189,6 +189,13 @@ pub struct MatrixSendResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MatrixTypingRequest {
+    pub room_id: String,
+    pub typing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatrixResolveTargetRequest {
     pub target: String,
     pub create_dm: Option<bool>,

@@ -1,10 +1,28 @@
 declare module "openclaw/plugin-sdk/matrix" {
-  export type DmPolicy = "open" | "allowlist" | "pairing";
-  export type GroupPolicy = "open" | "allowlist" | "blocked";
+  export type DmPolicy = "open" | "allowlist" | "pairing" | "disabled";
+  export type GroupPolicy = "open" | "allowlist" | "blocked" | "disabled";
   export type GroupToolPolicyConfig = Record<string, unknown>;
+  export type AllowlistMatch<T extends string = string> = {
+    allowed: boolean;
+    matchKey?: string;
+    matchSource?: T;
+  };
   export type OpenClawConfig = {
     channels?: Record<string, unknown> & {
       matrix?: unknown;
+    };
+    commands?: {
+      useAccessGroups?: boolean;
+    };
+    messages?: {
+      ackReaction?: string;
+      ackReactionScope?:
+        | "group-mentions"
+        | "group-all"
+        | "direct"
+        | "all"
+        | "off"
+        | "none";
     };
   };
 
@@ -214,6 +232,53 @@ declare module "openclaw/plugin-sdk/matrix" {
     key: string,
     opts?: { required?: boolean; allowEmpty?: boolean },
   ): string;
+  export function createReplyPrefixOptions(params: Record<string, unknown>): {
+    onModelSelected?: (...args: unknown[]) => void;
+    [key: string]: unknown;
+  };
+  export function createScopedPairingAccess(params: Record<string, unknown>): {
+    accountId: string;
+    readAllowFromStore: () => Promise<string[]>;
+    readStoreForDmPolicy: (provider: string, accountId: string) => Promise<string[]>;
+    upsertPairingRequest: (params: {
+      id: string;
+      meta?: Record<string, string | undefined>;
+    }) => Promise<{ code: string; created: boolean }>;
+  };
+  export function createTypingCallbacks(params: Record<string, unknown>): {
+    onReplyStart: () => Promise<void>;
+    onIdle?: () => void;
+    onCleanup?: () => void;
+  };
+  export function dispatchReplyFromConfigWithSettledDispatcher(params: Record<string, unknown>): Promise<{
+    queuedFinal: boolean;
+    counts: { final: number };
+  }>;
+  export function evaluateGroupRouteAccessForPolicy(params: Record<string, unknown>): {
+    allowed: boolean;
+    reason: string;
+  };
+  export function formatAllowlistMatchMeta(match: Record<string, unknown>): string;
+  export function logInboundDrop(params: Record<string, unknown>): void;
+  export function resolveControlCommandGate(params: Record<string, unknown>): {
+    commandAuthorized: boolean;
+    shouldBlock: boolean;
+  };
+  export function buildChannelKeyCandidates(...keys: string[]): string[];
+  export function resolveChannelEntryMatch(params: Record<string, unknown>): {
+    entry?: unknown;
+    key?: string;
+    wildcardEntry?: unknown;
+    wildcardKey?: string;
+  };
+  export function issuePairingChallenge(params: Record<string, unknown>): Promise<void>;
+  export function readStoreAllowFromForDmPolicy(params: Record<string, unknown>): Promise<string[]>;
+  export function resolveDmGroupAccessWithLists(params: Record<string, unknown>): {
+    decision: "allow" | "block" | "pairing";
+    effectiveAllowFrom: string[];
+    effectiveGroupAllowFrom: string[];
+  };
+  export function resolveAllowlistMatchByCandidates(params: Record<string, unknown>): AllowlistMatch;
 }
 
 declare module "openclaw/plugin-sdk/compat" {

@@ -46,11 +46,13 @@ export type MatrixChannelAccountConfig = {
   replyToMode?: MatrixReplyToMode;
   threadReplies?: MatrixThreadRepliesMode;
   textChunkLimit?: number;
+  roomHistoryMaxEntries?: number;
   mediaMaxMb?: number;
   xPreviewViaFxTwitter?: boolean;
   autoJoin?: MatrixAutoJoinMode;
   groupAllowFrom?: string[];
   dm?: {
+    enabled?: boolean;
     policy?: DmPolicy;
     allowFrom?: string[];
   };
@@ -172,6 +174,11 @@ export type MatrixSendResult = {
   roomId: string;
   messageId: string;
   threadId?: string;
+};
+
+export type MatrixTypingRequest = {
+  roomId: string;
+  typing: boolean;
 };
 
 export type MatrixResolveTargetRequest = {

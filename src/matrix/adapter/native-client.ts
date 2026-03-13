@@ -23,6 +23,7 @@ import type {
   MatrixResolveTargetResult,
   MatrixSendRequest,
   MatrixSendResult,
+  MatrixTypingRequest,
   MatrixUploadMediaRequest,
   MatrixUploadMediaResult,
 } from "../../types.js";
@@ -45,6 +46,7 @@ type NativeBindingClient = {
   recordCustomEmojiUsage(requestJson: string): void;
   listKnownShortcodes(requestJson: string): string;
   resolveLinkPreviews(requestJson: string): string;
+  setTyping(requestJson: string): void;
 };
 
 export class MatrixNativeClient {
@@ -116,5 +118,9 @@ export class MatrixNativeClient {
 
   resolveLinkPreviews(request: MatrixResolveLinkPreviewsRequest): MatrixLinkPreviewResult {
     return JSON.parse(this.#client.resolveLinkPreviews(JSON.stringify(request))) as MatrixLinkPreviewResult;
+  }
+
+  setTyping(request: MatrixTypingRequest): void {
+    this.#client.setTyping(JSON.stringify(request));
   }
 }
