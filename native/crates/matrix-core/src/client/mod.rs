@@ -11,17 +11,19 @@ use matrix_sdk::{
     RoomState,
     SessionChange,
     config::RequestConfig,
+    deserialized_responses::SyncOrStrippedState,
     encryption::EncryptionSettings,
-    room::{IncludeRelations, RelationsOptions},
+    room::{IncludeRelations, MessagesOptions, RelationsOptions, edit::EditedContent},
     ruma::{
-        EventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomOrAliasId, RoomId,
-        UserId,
+        EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId,
+        RoomOrAliasId, RoomId, UInt, UserId,
         api::Direction,
         events::{
             AnySyncMessageLikeEvent, AnySyncTimelineEvent, TimelineEventType,
             reaction::ReactionEventContent,
             relation::{Annotation, RelationType},
         },
+        events::room::pinned_events::RoomPinnedEventsEventContent,
         events::room::message::{
             OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation,
@@ -34,15 +36,17 @@ use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 use crate::{
     api::{
         MatrixAuthConfig, MatrixChannelInfo, MatrixChannelInfoRequest, MatrixClientConfig,
-        MatrixCustomEmojiUsageRequest, MatrixDiagnostics, MatrixDownloadMediaRequest,
-        MatrixDownloadMediaResult, MatrixJoinRequest, MatrixJoinResult, MatrixKeyBackupState,
-        MatrixLinkPreviewResult, MatrixListEmojiRequest, MatrixListReactionsRequest, MatrixMemberInfo,
-        MatrixMemberInfoRequest, MatrixNativeEvent, MatrixReactRequest, MatrixReactResult,
-        MatrixReactionSummary, MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest,
+        MatrixCustomEmojiUsageRequest, MatrixDeleteMessageRequest, MatrixDeleteMessageResult,
+        MatrixDiagnostics, MatrixDownloadMediaRequest, MatrixDownloadMediaResult,
+        MatrixEditMessageRequest, MatrixEditMessageResult, MatrixJoinRequest, MatrixJoinResult,
+        MatrixKeyBackupState, MatrixLinkPreviewResult, MatrixListEmojiRequest,
+        MatrixListPinsRequest, MatrixListReactionsRequest, MatrixMemberInfo,
+        MatrixMemberInfoRequest, MatrixNativeEvent, MatrixPinMessageRequest, MatrixPinsResult,
+        MatrixReactRequest, MatrixReactResult, MatrixReactionSummary, MatrixReadMessagesRequest,
+        MatrixReadMessagesResult, MatrixResolveLinkPreviewsRequest, MatrixResolveTargetRequest,
         MatrixResolveTargetResult, MatrixSendRequest, MatrixSendResult, MatrixSyncState,
-        MatrixTypingRequest,
-        MatrixUploadMediaRequest, MatrixUploadMediaResult, MatrixVerificationState,
-        NativeLifecycleStage, StoredSession,
+        MatrixTypingRequest, MatrixUploadMediaRequest, MatrixUploadMediaResult,
+        MatrixVerificationState, NativeLifecycleStage, StoredSession,
     },
     auth::session,
     crypto, emoji, events, media, previews, reactions, state, sync, MatrixError, MatrixResult,
@@ -369,6 +373,71 @@ impl MatrixCoreService {
         let client = self.client()?;
         let result = self.runtime.block_on(join_room_internal(&client, &request.target))?;
         Ok(result)
+    }
+
+    pub fn read_messages(
+        &self,
+        request: MatrixReadMessagesRequest,
+    ) -> MatrixResult<MatrixReadMessagesResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(read_messages_internal(&client, &request))
+    }
+
+    pub fn edit_message(
+        &mut self,
+        request: MatrixEditMessageRequest,
+    ) -> MatrixResult<MatrixEditMessageResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| MatrixError::State("client config is unavailable".to_string()))?;
+        self.runtime
+            .block_on(edit_message_internal(&client, config, &request))
+    }
+
+    pub fn delete_message(
+        &mut self,
+        request: MatrixDeleteMessageRequest,
+    ) -> MatrixResult<MatrixDeleteMessageResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(delete_message_internal(&client, &request))
+    }
+
+    pub fn pin_message(&mut self, request: MatrixPinMessageRequest) -> MatrixResult<MatrixPinsResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(pin_message_internal(&client, &request))
+    }
+
+    pub fn unpin_message(
+        &mut self,
+        request: MatrixPinMessageRequest,
+    ) -> MatrixResult<MatrixPinsResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(unpin_message_internal(&client, &request))
+    }
+
+    pub fn list_pins(&self, request: MatrixListPinsRequest) -> MatrixResult<MatrixPinsResult> {
+        if !self.running {
+            return Err(MatrixError::State("client is not running".to_string()));
+        }
+        let client = self.client()?;
+        self.runtime.block_on(list_pins_internal(&client, &request))
     }
 
     pub fn member_info(&self, request: MatrixMemberInfoRequest) -> MatrixResult<MatrixMemberInfo> {
@@ -703,6 +772,23 @@ async fn build_message_content(
     })
 }
 
+fn build_message_edit_content(
+    config: &MatrixClientConfig,
+    room: &Room,
+    text: &str,
+) -> MatrixResult<RoomMessageEventContentWithoutRelation> {
+    let formatted = emoji::render_text_with_custom_emoji(
+        config,
+        text,
+        Some(room.room_id().as_str()),
+        Utc::now().timestamp_millis(),
+    )?;
+    Ok(match formatted {
+        Some(formatted) => RoomMessageEventContentWithoutRelation::text_html(text, formatted),
+        None => RoomMessageEventContentWithoutRelation::text_plain(text),
+    })
+}
+
 async fn join_room_internal(client: &Client, target: &str) -> MatrixResult<MatrixJoinResult> {
     let normalized = normalize_target(target)?;
     if normalized.starts_with('@') {
@@ -734,6 +820,208 @@ async fn join_room_internal(client: &Client, target: &str) -> MatrixResult<Matri
     Ok(MatrixJoinResult {
         room_id: room.room_id().to_string(),
         joined: room.state() == RoomState::Joined,
+    })
+}
+
+async fn read_messages_internal(
+    client: &Client,
+    request: &MatrixReadMessagesRequest,
+) -> MatrixResult<MatrixReadMessagesResult> {
+    let resolved_room_id = resolve_target_internal(client, &request.room_id, false)
+        .await?
+        .resolved_room_id;
+    let room_id: OwnedRoomId = RoomId::parse(resolved_room_id.as_str())?.to_owned();
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+    let token = request
+        .after
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            request
+                .before
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    let mut options = if request
+        .after
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        MessagesOptions::forward()
+    } else {
+        MessagesOptions::backward()
+    };
+    if let Some(token) = token.as_deref() {
+        options = options.from(token);
+    }
+    if let Some(limit) = request.limit {
+        let clamped = limit.clamp(1, 1000) as u64;
+        options.limit = UInt::try_from(clamped)
+            .map_err(|_| MatrixError::State(format!("invalid message limit: {clamped}")))?;
+    }
+    let response = room.messages(options).await?;
+    let messages = response
+        .chunk
+        .iter()
+        .filter_map(events::summarize_timeline_event)
+        .collect();
+
+    Ok(MatrixReadMessagesResult {
+        messages,
+        next_batch: response.end,
+        prev_batch: Some(response.start),
+    })
+}
+
+async fn edit_message_internal(
+    client: &Client,
+    config: &MatrixClientConfig,
+    request: &MatrixEditMessageRequest,
+) -> MatrixResult<MatrixEditMessageResult> {
+    let trimmed = request.text.trim();
+    if trimmed.is_empty() {
+        return Err(MatrixError::State("matrix edit requires content".to_string()));
+    }
+    let (room, resolved_target) = resolve_room_for_send(client, &request.room_id).await?;
+    let message_id = EventId::parse(request.message_id.trim())?.to_owned();
+    let content = room
+        .make_edit_event(
+            &message_id,
+            EditedContent::RoomMessage(build_message_edit_content(config, &room, trimmed)?),
+        )
+        .await
+        .map_err(|err| MatrixError::State(format!("failed to build matrix edit event: {err}")))?;
+    let response = room.send(content).await?;
+
+    Ok(MatrixEditMessageResult {
+        room_id: resolved_target.resolved_room_id,
+        message_id: message_id.to_string(),
+        event_id: response.event_id.to_string(),
+    })
+}
+
+async fn delete_message_internal(
+    client: &Client,
+    request: &MatrixDeleteMessageRequest,
+) -> MatrixResult<MatrixDeleteMessageResult> {
+    let (room, resolved_target) = resolve_room_for_send(client, &request.room_id).await?;
+    let message_id = EventId::parse(request.message_id.trim())?.to_owned();
+    let response = room
+        .redact(&message_id, request.reason.as_deref(), None)
+        .await?;
+
+    Ok(MatrixDeleteMessageResult {
+        room_id: resolved_target.resolved_room_id,
+        message_id: message_id.to_string(),
+        event_id: response.event_id.to_string(),
+    })
+}
+
+async fn read_pinned_events(room: &Room) -> MatrixResult<Vec<OwnedEventId>> {
+    let Some(raw) = room
+        .get_state_event_static::<RoomPinnedEventsEventContent>()
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let event = raw
+        .deserialize()
+        .map_err(|err| MatrixError::State(format!("failed to decode pinned events: {err}")))?;
+    Ok(match event {
+        SyncOrStrippedState::Sync(ev) => ev
+            .as_original()
+            .map(|value| value.content.pinned.clone())
+            .unwrap_or_default(),
+        SyncOrStrippedState::Stripped(ev) => ev.content.pinned.unwrap_or_default(),
+    })
+}
+
+async fn summarize_pinned_events(room: &Room, pinned: &[OwnedEventId]) -> Vec<crate::api::MatrixMessageSummary> {
+    let mut output = Vec::new();
+    for event_id in pinned {
+        let Ok(event) = room.load_or_fetch_event(event_id, None).await else {
+            continue;
+        };
+        if let Some(summary) = events::summarize_timeline_event(&event) {
+            output.push(summary);
+        }
+    }
+    output
+}
+
+async fn update_pins_internal(
+    client: &Client,
+    request: &MatrixPinMessageRequest,
+    update: impl FnOnce(Vec<OwnedEventId>, OwnedEventId) -> Vec<OwnedEventId>,
+) -> MatrixResult<MatrixPinsResult> {
+    let (room, resolved_target) = resolve_room_for_send(client, &request.room_id).await?;
+    let message_id = EventId::parse(request.message_id.trim())?.to_owned();
+    let next = update(read_pinned_events(&room).await?, message_id);
+    room.send_state_event(RoomPinnedEventsEventContent::new(next.clone()))
+        .await?;
+    let events = summarize_pinned_events(&room, &next).await;
+
+    Ok(MatrixPinsResult {
+        room_id: resolved_target.resolved_room_id,
+        pinned: next.into_iter().map(|value| value.to_string()).collect(),
+        events,
+    })
+}
+
+async fn pin_message_internal(
+    client: &Client,
+    request: &MatrixPinMessageRequest,
+) -> MatrixResult<MatrixPinsResult> {
+    update_pins_internal(client, request, |current, message_id| {
+        if current.iter().any(|value| value == &message_id) {
+            current
+        } else {
+            let mut next = current;
+            next.push(message_id);
+            next
+        }
+    })
+    .await
+}
+
+async fn unpin_message_internal(
+    client: &Client,
+    request: &MatrixPinMessageRequest,
+) -> MatrixResult<MatrixPinsResult> {
+    update_pins_internal(client, request, |current, message_id| {
+        current
+            .into_iter()
+            .filter(|value| value != &message_id)
+            .collect()
+    })
+    .await
+}
+
+async fn list_pins_internal(
+    client: &Client,
+    request: &MatrixListPinsRequest,
+) -> MatrixResult<MatrixPinsResult> {
+    let resolved_room_id = resolve_target_internal(client, &request.room_id, false)
+        .await?
+        .resolved_room_id;
+    let room_id: OwnedRoomId = RoomId::parse(resolved_room_id.as_str())?.to_owned();
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| MatrixError::State(format!("room {room_id} is not known to the client")))?;
+    let pinned = read_pinned_events(&room).await?;
+    let events = summarize_pinned_events(&room, &pinned).await;
+
+    Ok(MatrixPinsResult {
+        room_id: resolved_room_id,
+        pinned: pinned.into_iter().map(|value| value.to_string()).collect(),
+        events,
     })
 }
 

@@ -232,6 +232,11 @@ declare module "openclaw/plugin-sdk/matrix" {
     key: string,
     opts?: { required?: boolean; allowEmpty?: boolean },
   ): string;
+  export function readNumberParam(
+    params: Record<string, unknown>,
+    key: string,
+    opts?: { integer?: boolean },
+  ): number | undefined;
   export function createReplyPrefixOptions(params: Record<string, unknown>): {
     onModelSelected?: (...args: unknown[]) => void;
     [key: string]: unknown;

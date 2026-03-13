@@ -228,6 +228,57 @@ export type MatrixInboundEvent = {
   media: MatrixInboundMedia[];
 };
 
+export type MatrixMessageRelatesTo = {
+  relType?: string;
+  eventId?: string;
+};
+
+export type MatrixMessageSummary = {
+  eventId: string;
+  sender: string;
+  body: string;
+  msgtype?: string;
+  timestamp: string;
+  relatesTo?: MatrixMessageRelatesTo;
+};
+
+export type MatrixReadMessagesRequest = {
+  roomId: string;
+  limit?: number;
+  before?: string;
+  after?: string;
+};
+
+export type MatrixReadMessagesResult = {
+  messages: MatrixMessageSummary[];
+  nextBatch?: string | null;
+  prevBatch?: string | null;
+};
+
+export type MatrixEditMessageRequest = {
+  roomId: string;
+  messageId: string;
+  text: string;
+};
+
+export type MatrixEditMessageResult = {
+  roomId: string;
+  messageId: string;
+  eventId: string;
+};
+
+export type MatrixDeleteMessageRequest = {
+  roomId: string;
+  messageId: string;
+  reason?: string;
+};
+
+export type MatrixDeleteMessageResult = {
+  roomId: string;
+  messageId: string;
+  eventId: string;
+};
+
 export type MatrixMemberInfoRequest = {
   roomId: string;
   userId: string;
@@ -366,6 +417,21 @@ export type MatrixListReactionsRequest = {
   roomId: string;
   messageId: string;
   limit?: number;
+};
+
+export type MatrixPinMessageRequest = {
+  roomId: string;
+  messageId: string;
+};
+
+export type MatrixListPinsRequest = {
+  roomId: string;
+};
+
+export type MatrixPinsResult = {
+  roomId: string;
+  pinned: string[];
+  events: MatrixMessageSummary[];
 };
 
 export type MatrixListEmojiRequest = {

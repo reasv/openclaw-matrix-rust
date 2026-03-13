@@ -2,8 +2,12 @@ import { MatrixCoreClient } from "../../../npm/index.js";
 import type {
   MatrixChannelInfo,
   MatrixChannelInfoRequest,
+  MatrixDeleteMessageRequest,
+  MatrixDeleteMessageResult,
   MatrixDownloadMediaRequest,
   MatrixDownloadMediaResult,
+  MatrixEditMessageRequest,
+  MatrixEditMessageResult,
   MatrixNativeConfig,
   MatrixNativeDiagnostics,
   MatrixEmojiUsageRequest,
@@ -11,13 +15,18 @@ import type {
   MatrixJoinResult,
   MatrixLinkPreviewResult,
   MatrixListEmojiRequest,
+  MatrixListPinsRequest,
   MatrixListReactionsRequest,
   MatrixMemberInfo,
   MatrixMemberInfoRequest,
   MatrixNativeEvent,
+  MatrixPinsResult,
+  MatrixPinMessageRequest,
   MatrixReactRequest,
   MatrixReactResult,
   MatrixReactionSummary,
+  MatrixReadMessagesRequest,
+  MatrixReadMessagesResult,
   MatrixResolveLinkPreviewsRequest,
   MatrixResolveTargetRequest,
   MatrixResolveTargetResult,
@@ -37,6 +46,12 @@ type NativeBindingClient = {
   sendMessage(requestJson: string): string;
   resolveTarget(requestJson: string): string;
   joinRoom(requestJson: string): string;
+  readMessages(requestJson: string): string;
+  editMessage(requestJson: string): string;
+  deleteMessage(requestJson: string): string;
+  pinMessage(requestJson: string): string;
+  unpinMessage(requestJson: string): string;
+  listPins(requestJson: string): string;
   memberInfo(requestJson: string): string;
   channelInfo(requestJson: string): string;
   uploadMedia(requestJson: string): string;
@@ -82,6 +97,30 @@ export class MatrixNativeClient {
 
   joinRoom(request: MatrixJoinRequest): MatrixJoinResult {
     return JSON.parse(this.#client.joinRoom(JSON.stringify(request))) as MatrixJoinResult;
+  }
+
+  readMessages(request: MatrixReadMessagesRequest): MatrixReadMessagesResult {
+    return JSON.parse(this.#client.readMessages(JSON.stringify(request))) as MatrixReadMessagesResult;
+  }
+
+  editMessage(request: MatrixEditMessageRequest): MatrixEditMessageResult {
+    return JSON.parse(this.#client.editMessage(JSON.stringify(request))) as MatrixEditMessageResult;
+  }
+
+  deleteMessage(request: MatrixDeleteMessageRequest): MatrixDeleteMessageResult {
+    return JSON.parse(this.#client.deleteMessage(JSON.stringify(request))) as MatrixDeleteMessageResult;
+  }
+
+  pinMessage(request: MatrixPinMessageRequest): MatrixPinsResult {
+    return JSON.parse(this.#client.pinMessage(JSON.stringify(request))) as MatrixPinsResult;
+  }
+
+  unpinMessage(request: MatrixPinMessageRequest): MatrixPinsResult {
+    return JSON.parse(this.#client.unpinMessage(JSON.stringify(request))) as MatrixPinsResult;
+  }
+
+  listPins(request: MatrixListPinsRequest): MatrixPinsResult {
+    return JSON.parse(this.#client.listPins(JSON.stringify(request))) as MatrixPinsResult;
   }
 
   memberInfo(request: MatrixMemberInfoRequest): MatrixMemberInfo {

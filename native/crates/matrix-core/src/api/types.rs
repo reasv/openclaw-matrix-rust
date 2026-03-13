@@ -172,6 +172,24 @@ pub struct MatrixInboundEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MatrixMessageRelatesTo {
+    pub rel_type: Option<String>,
+    pub event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixMessageSummary {
+    pub event_id: String,
+    pub sender: String,
+    pub body: String,
+    pub msgtype: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub relates_to: Option<MatrixMessageRelatesTo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatrixSendRequest {
     pub room_id: String,
     pub text: String,
@@ -222,6 +240,55 @@ pub struct MatrixJoinRequest {
 pub struct MatrixJoinResult {
     pub room_id: String,
     pub joined: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReadMessagesRequest {
+    pub room_id: String,
+    pub limit: Option<usize>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixReadMessagesResult {
+    pub messages: Vec<MatrixMessageSummary>,
+    pub next_batch: Option<String>,
+    pub prev_batch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixEditMessageRequest {
+    pub room_id: String,
+    pub message_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixEditMessageResult {
+    pub room_id: String,
+    pub message_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixDeleteMessageRequest {
+    pub room_id: String,
+    pub message_id: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixDeleteMessageResult {
+    pub room_id: String,
+    pub message_id: String,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +465,27 @@ pub struct MatrixListReactionsRequest {
     pub room_id: String,
     pub message_id: String,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixPinMessageRequest {
+    pub room_id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixListPinsRequest {
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixPinsResult {
+    pub room_id: String,
+    pub pinned: Vec<String>,
+    pub events: Vec<MatrixMessageSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
