@@ -1,5 +1,5 @@
 {
-  "id": "matrix",
+  "id": "matrix-rust",
   "channels": ["matrix"],
   "configSchema": {
     "type": "object",

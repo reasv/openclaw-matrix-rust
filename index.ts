@@ -4,7 +4,7 @@ import { matrixRustPlugin } from "./src/channel.js";
 import { setMatrixRustRuntime } from "./src/runtime.js";
 
 const plugin = {
-  id: "matrix",
+  id: "matrix-rust",
   name: "Matrix",
   description: "Matrix channel plugin backed by a Rust native core",
   configSchema: emptyPluginConfigSchema(),
