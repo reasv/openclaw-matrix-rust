@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/matrix";
 import { resolveMatrixRustAccount } from "./matrix/accounts.js";
 import { sendMatrixMedia } from "./matrix/inbound.js";
+import { getMatrixRustRuntime } from "./runtime.js";
 import type { CoreConfig, MatrixReactionSummary, ResolvedMatrixAccount } from "./types.js";
 
 export const matrixRustActions: ChannelMessageActionAdapter = {
@@ -95,6 +96,33 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
 async function ensureStartedClient(account: ResolvedMatrixAccount) {
   const { ensureMatrixClientStarted } = await import("./channel.js");
   return ensureMatrixClientStarted(account);
+}
+
+function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
+  const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
+  return limitMb * 1024 * 1024;
+}
+
+async function persistDownloadedMatrixMedia(params: {
+  account: ResolvedMatrixAccount;
+  downloaded: {
+    dataBase64: string;
+    contentType?: string;
+    filename?: string;
+  };
+}): Promise<{ path: string; contentType?: string }> {
+  const runtime = getMatrixRustRuntime() as any;
+  const persisted = await runtime.channel.media.saveMediaBuffer(
+    Buffer.from(params.downloaded.dataBase64, "base64"),
+    params.downloaded.contentType,
+    "inbound",
+    resolveMediaMaxBytes(params.account),
+    params.downloaded.filename,
+  );
+  return {
+    path: persisted.path,
+    contentType: persisted.contentType ?? params.downloaded.contentType,
+  };
 }
 
 export function summarizeReactionsForTool(
@@ -221,10 +249,65 @@ async function handleNonSendAction(
       throw new Error("Matrix messages are disabled.");
     }
     const client = await ensureStartedClient(account);
+    const roomId = resolveRoomId(ctx.params);
+    const eventId = readStringParam(ctx.params, "eventId") ?? readStringParam(ctx.params, "messageId");
+    const includeMedia = Boolean(ctx.params.includeMedia || ctx.params.downloadMedia);
+    if (eventId) {
+      const message = client.messageSummary({
+        roomId,
+        eventId,
+      });
+      if (!message) {
+        return {
+          ok: true,
+          roomId,
+          eventId,
+          message: null,
+          media: [],
+        };
+      }
+      let media: Array<Record<string, unknown>> = [];
+      if (includeMedia) {
+        try {
+          const downloaded = client.downloadMedia({
+            roomId,
+            eventId,
+          });
+          const persisted = await persistDownloadedMatrixMedia({
+            account,
+            downloaded,
+          });
+          media = [
+            {
+              eventId,
+              kind: downloaded.kind,
+              filename: downloaded.filename ?? null,
+              contentType: downloaded.contentType ?? null,
+              savedPath: persisted.path,
+              savedContentType: persisted.contentType ?? null,
+            },
+          ];
+        } catch (err) {
+          media = [
+            {
+              eventId,
+              error: String(err),
+            },
+          ];
+        }
+      }
+      return {
+        ok: true,
+        roomId,
+        eventId,
+        message,
+        media,
+      };
+    }
     return {
       ok: true,
       ...client.readMessages({
-        roomId: resolveRoomId(ctx.params),
+        roomId,
         limit: readNumberParam(ctx.params, "limit", { integer: true }) ?? undefined,
         before: readStringParam(ctx.params, "before") ?? undefined,
         after: readStringParam(ctx.params, "after") ?? undefined,

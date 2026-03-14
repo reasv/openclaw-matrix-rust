@@ -143,7 +143,9 @@ Example:
       "recoveryKey": "optional recovery key",
       "deviceName": "OpenClaw Gateway",
       "encryption": true,
-      "threadReplies": "inbound"
+      "threadReplies": "inbound",
+      "imageHandlingMode": "dual",
+      "otherMediaPaths": true
     }
   }
 }
@@ -168,6 +170,8 @@ Useful optional settings include:
 - `replyToMode`
 - `threadReplies`
 - `xPreviewViaFxTwitter`
+- `imageHandlingMode`
+- `otherMediaPaths`
 
 See `src/config-schema.ts` for the exact schema.
 
@@ -239,6 +243,13 @@ This section lists the behavior this connector actually implements today.
 - Room target resolution and room join are implemented in the native core.
 - Media upload and download are implemented in Rust, with handoff to OpenClaw on the TS side.
 - Multiple Matrix media types are surfaced into the OpenClaw runtime.
+- Every inbound message now includes explicit attachment manifest text with filename and MIME type, including buffered history entries.
+- Current-message and direct-parent reply images can be passed to multimodal agent runs as raw image blocks.
+- Image handoff is configurable with `imageHandlingMode`:
+  - `dual`: raw image blocks plus normal `MediaPaths`
+  - `multimodal-only`: raw image blocks without image `MediaPaths`
+  - `analysis-only`: image `MediaPaths` only, no raw image blocks
+- Non-image attachment propagation into `MediaPaths` is separately controlled by `otherMediaPaths`.
 
 ### Custom emoji and reactions
 
@@ -270,6 +281,12 @@ This section lists the behavior this connector actually implements today.
 - `list-pins`
 - `member-info`
 - `channel-info`
+
+Notes on `read`:
+
+- `read` with timeline params (`limit`, `before`, `after`) still returns paginated message summaries.
+- `read` with `eventId` returns a single message summary.
+- `read` with `eventId` and `includeMedia: true` also downloads and persists that message's attachment, returning filename, MIME type, and saved local path for intentional follow-up retrieval.
 
 ## Architecture
 

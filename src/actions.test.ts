@@ -18,10 +18,16 @@ const baseConfig: CoreConfig = {
 const originalDiagnostics = MatrixNativeClient.prototype.diagnostics;
 const originalSendMessage = MatrixNativeClient.prototype.sendMessage;
 const originalUploadMedia = MatrixNativeClient.prototype.uploadMedia;
+const originalReadMessages = MatrixNativeClient.prototype.readMessages;
+const originalMessageSummary = MatrixNativeClient.prototype.messageSummary;
+const originalDownloadMedia = MatrixNativeClient.prototype.downloadMedia;
 
 function installReadyClient(params: {
   sendMessage?: (request: Record<string, unknown>) => Record<string, unknown>;
   uploadMedia?: (request: Record<string, unknown>) => Record<string, unknown>;
+  readMessages?: (request: Record<string, unknown>) => Record<string, unknown>;
+  messageSummary?: (request: Record<string, unknown>) => Record<string, unknown> | null;
+  downloadMedia?: (request: Record<string, unknown>) => Record<string, unknown>;
 }) {
   MatrixNativeClient.prototype.diagnostics = function diagnostics() {
     return {
@@ -48,6 +54,24 @@ function installReadyClient(params: {
     }
     return params.uploadMedia(request as Record<string, unknown>) as any;
   };
+  MatrixNativeClient.prototype.readMessages = function readMessages(request) {
+    if (!params.readMessages) {
+      throw new Error("unexpected readMessages");
+    }
+    return params.readMessages(request as Record<string, unknown>) as any;
+  };
+  MatrixNativeClient.prototype.messageSummary = function messageSummary(request) {
+    if (!params.messageSummary) {
+      throw new Error("unexpected messageSummary");
+    }
+    return params.messageSummary(request as Record<string, unknown>) as any;
+  };
+  MatrixNativeClient.prototype.downloadMedia = function downloadMedia(request) {
+    if (!params.downloadMedia) {
+      throw new Error("unexpected downloadMedia");
+    }
+    return params.downloadMedia(request as Record<string, unknown>) as any;
+  };
 }
 
 beforeEach(() => {
@@ -65,6 +89,17 @@ beforeEach(() => {
         fetchRemoteMedia: async () => {
           throw new Error("unexpected fetchRemoteMedia");
         },
+        saveMediaBuffer: async (
+          buffer: Buffer,
+          contentType?: string,
+          _kind?: string,
+          _maxBytes?: number,
+          filename?: string,
+        ) => ({
+          path: `/tmp/${filename ?? "attachment"}`,
+          contentType: contentType ?? "application/octet-stream",
+          sizeBytes: buffer.length,
+        }),
       },
     },
   } as any);
@@ -74,6 +109,9 @@ afterEach(() => {
   MatrixNativeClient.prototype.diagnostics = originalDiagnostics;
   MatrixNativeClient.prototype.sendMessage = originalSendMessage;
   MatrixNativeClient.prototype.uploadMedia = originalUploadMedia;
+  MatrixNativeClient.prototype.readMessages = originalReadMessages;
+  MatrixNativeClient.prototype.messageSummary = originalMessageSummary;
+  MatrixNativeClient.prototype.downloadMedia = originalDownloadMedia;
 });
 
 test("lists the full action surface when all families are enabled", () => {
@@ -191,6 +229,129 @@ test("reduces reaction summaries to agent-facing fields", () => {
       users: ["@a:example.org", "@b:example.org"],
     },
   ]);
+});
+
+test("read action keeps timeline reads unchanged when no eventId is supplied", async () => {
+  const readMessagesCalls: Array<Record<string, unknown>> = [];
+  installReadyClient({
+    readMessages: (request) => {
+      readMessagesCalls.push(request);
+      return {
+        messages: [
+          {
+            eventId: "$one",
+            sender: "@alice:example.org",
+            body: "hello",
+            timestamp: "2026-03-14T12:00:00.000Z",
+          },
+        ],
+        nextBatch: null,
+        prevBatch: null,
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "read",
+    params: {
+      to: "!room:example.org",
+      limit: 5,
+    },
+    cfg: baseConfig,
+  });
+
+  assert.deepEqual(readMessagesCalls, [
+    {
+      roomId: "!room:example.org",
+      limit: 5,
+      before: undefined,
+      after: undefined,
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    messages: [
+      {
+        eventId: "$one",
+        sender: "@alice:example.org",
+        body: "hello",
+        timestamp: "2026-03-14T12:00:00.000Z",
+      },
+    ],
+    nextBatch: null,
+    prevBatch: null,
+  });
+});
+
+test("read action can retrieve a single event with saved media metadata", async () => {
+  const messageSummaryCalls: Array<Record<string, unknown>> = [];
+  const downloadMediaCalls: Array<Record<string, unknown>> = [];
+  installReadyClient({
+    messageSummary: (request) => {
+      messageSummaryCalls.push(request);
+      return {
+        eventId: "$event",
+        sender: "@alice:example.org",
+        body: "see attached",
+        timestamp: "2026-03-14T12:00:00.000Z",
+      };
+    },
+    downloadMedia: (request) => {
+      downloadMediaCalls.push(request);
+      return {
+        roomId: "!room:example.org",
+        eventId: "$event",
+        kind: "image",
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        dataBase64: Buffer.from("jpeg-bytes").toString("base64"),
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "read",
+    params: {
+      to: "!room:example.org",
+      eventId: "$event",
+      includeMedia: true,
+    },
+    cfg: baseConfig,
+  });
+
+  assert.deepEqual(messageSummaryCalls, [
+    {
+      roomId: "!room:example.org",
+      eventId: "$event",
+    },
+  ]);
+  assert.deepEqual(downloadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      eventId: "$event",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    roomId: "!room:example.org",
+    eventId: "$event",
+    message: {
+      eventId: "$event",
+      sender: "@alice:example.org",
+      body: "see attached",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    },
+    media: [
+      {
+        eventId: "$event",
+        kind: "image",
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        savedPath: "/tmp/photo.jpg",
+        savedContentType: "image/jpeg",
+      },
+    ],
+  });
 });
 
 test("send action keeps text-only sends on sendMessage", async () => {
