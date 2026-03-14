@@ -18,3 +18,16 @@ test("accepts per-room threadReplies overrides", () => {
   assert.equal(result.threadReplies, "inbound");
   assert.equal(result.rooms?.["!room:example.org"]?.threadReplies, "off");
 });
+
+test("accepts media handoff settings", () => {
+  const result = MatrixRustConfigSchema.parse({
+    homeserver: "https://matrix.example",
+    userId: "@bot:example.org",
+    password: "secret",
+    imageHandlingMode: "multimodal-only",
+    otherMediaPaths: false,
+  });
+
+  assert.equal(result.imageHandlingMode, "multimodal-only");
+  assert.equal(result.otherMediaPaths, false);
+});

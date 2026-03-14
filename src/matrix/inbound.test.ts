@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   buildMatrixInboundPresentation,
+  buildMatrixPromptImages,
   detectExplicitMention,
   extractMatrixCustomEmojiUsageFromFormattedBody,
+  filterMatrixMediaForContext,
   handleMatrixInboundEvent,
   resolveMatrixReplyContext,
   resolveMatrixThreadContext,
@@ -436,6 +438,134 @@ test("resolves reply context with display names and one-hop previews", async () 
   assert.deepEqual(replyContext.replyPreviewMedia, [
     { path: "/tmp/reply-preview.png", contentType: "image/png" },
   ]);
+});
+
+test("resolves reply attachment manifests and reply image media", async () => {
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+  } as ResolvedMatrixAccount["config"]);
+
+  const replyContext = await resolveMatrixReplyContext({
+    account,
+    client: {
+      downloadMedia: ({ eventId }: { eventId: string }) => {
+        assert.equal(eventId, "$parent");
+        return {
+          roomId: "!room:example.org",
+          eventId,
+          kind: "image",
+          filename: "reply-photo.png",
+          contentType: "image/png",
+          dataBase64: Buffer.from("reply-image").toString("base64"),
+        };
+      },
+      memberInfo: ({ userId }: { userId: string }) => ({
+        roomId: "!room:example.org",
+        userId,
+        displayName: "Alice",
+        isSelf: false,
+        isDirect: false,
+      }),
+      resolveLinkPreviews: () => ({
+        textBlocks: [],
+        media: [],
+        sources: [],
+      }),
+    } as any,
+    roomId: "!room:example.org",
+    replyToId: "$parent",
+    replySummary: {
+      eventId: "$parent",
+      sender: "@alice:example.org",
+      body: "see attachment",
+      timestamp: new Date().toISOString(),
+    },
+    persistPreviewMedia: async ({ media }) =>
+      media.map((item, index) => ({
+        path: `/tmp/reply-${index}.png`,
+        filename: item.filename,
+        kind: item.kind,
+        contentType: item.contentType,
+        promptImage: item.contentType?.startsWith("image/")
+          ? {
+              type: "image",
+              data: item.dataBase64,
+              mimeType: item.contentType,
+            }
+          : undefined,
+      })),
+  });
+
+  assert.deepEqual(replyContext.replyAttachmentTextBlocks, [
+    "[Reply attachments: 1]",
+    '[Reply attachment 1] filename="reply-photo.png" type="image/png"',
+  ]);
+  assert.deepEqual(replyContext.replyAttachmentMedia, [
+    {
+      path: "/tmp/reply-0.png",
+      filename: "reply-photo.png",
+      kind: "image",
+      contentType: "image/png",
+      promptImage: {
+        type: "image",
+        data: Buffer.from("reply-image").toString("base64"),
+        mimeType: "image/png",
+      },
+    },
+  ]);
+});
+
+test("filters MediaPaths separately from prompt image delivery", () => {
+  const media = [
+    {
+      path: "/tmp/current-image.png",
+      filename: "current-image.png",
+      kind: "image",
+      contentType: "image/png",
+      promptImage: {
+        type: "image" as const,
+        data: "aW1hZ2U=",
+        mimeType: "image/png",
+      },
+    },
+    {
+      path: "/tmp/report.pdf",
+      filename: "report.pdf",
+      kind: "file",
+      contentType: "application/pdf",
+    },
+  ];
+
+  const multimodalOnly = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    imageHandlingMode: "multimodal-only",
+    otherMediaPaths: false,
+  } as ResolvedMatrixAccount["config"]);
+  assert.deepEqual(filterMatrixMediaForContext({ account: multimodalOnly, media }), []);
+  assert.deepEqual(buildMatrixPromptImages({ account: multimodalOnly, media }), [
+    {
+      type: "image",
+      data: "aW1hZ2U=",
+      mimeType: "image/png",
+    },
+  ]);
+
+  const analysisOnly = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    imageHandlingMode: "analysis-only",
+    otherMediaPaths: true,
+  } as ResolvedMatrixAccount["config"]);
+  assert.deepEqual(
+    filterMatrixMediaForContext({ account: analysisOnly, media }).map((item) => item.path),
+    ["/tmp/current-image.png", "/tmp/report.pdf"],
+  );
+  assert.deepEqual(buildMatrixPromptImages({ account: analysisOnly, media }), []);
 });
 
 test("resolves thread starter context for a new thread session", async () => {

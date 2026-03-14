@@ -50,6 +50,8 @@ const accountSchema = z.object({
   roomHistoryMaxEntries: z.number().int().min(0).optional(),
   mediaMaxMb: z.number().positive().optional(),
   xPreviewViaFxTwitter: z.boolean().optional(),
+  imageHandlingMode: z.enum(["dual", "multimodal-only", "analysis-only"]).optional(),
+  otherMediaPaths: z.boolean().optional(),
   autoJoin: z.enum(["always", "allowlist", "off"]).optional(),
   groupAllowFrom: AllowFromListSchema,
   dm: buildNestedDmConfigSchema(),

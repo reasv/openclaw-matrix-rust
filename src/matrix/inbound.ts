@@ -17,6 +17,7 @@ import type {
   MatrixInboundEvent,
   MatrixMessageSummary,
   ResolvedMatrixAccount,
+  MatrixImageHandlingMode,
   MatrixRoomConfig,
   MatrixThreadRepliesMode,
 } from "../types.js";
@@ -46,9 +47,87 @@ import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
 
+type PromptImageContent = {
+  type: "image";
+  data: string;
+  mimeType: string;
+};
+
+type SavedMatrixMedia = {
+  path: string;
+  contentType?: string;
+  filename?: string;
+  kind?: string;
+  promptImage?: PromptImageContent;
+};
+
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
   const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
   return limitMb * 1024 * 1024;
+}
+
+function resolveMatrixImageHandlingMode(
+  account: ResolvedMatrixAccount,
+): MatrixImageHandlingMode {
+  return account.config.imageHandlingMode ?? "dual";
+}
+
+function shouldPassMatrixPromptImages(account: ResolvedMatrixAccount): boolean {
+  return resolveMatrixImageHandlingMode(account) !== "analysis-only";
+}
+
+function shouldIncludeMatrixImageMediaPaths(account: ResolvedMatrixAccount): boolean {
+  return resolveMatrixImageHandlingMode(account) !== "multimodal-only";
+}
+
+function shouldIncludeMatrixOtherMediaPaths(account: ResolvedMatrixAccount): boolean {
+  return account.config.otherMediaPaths !== false;
+}
+
+function isMatrixImageKind(kind?: string): boolean {
+  return kind?.trim() === "image";
+}
+
+function isMatrixImageMime(contentType?: string): boolean {
+  return contentType?.trim().toLowerCase().startsWith("image/") ?? false;
+}
+
+function buildPromptImageFromBase64(params: {
+  dataBase64: string;
+  contentType?: string;
+  kind?: string;
+}): PromptImageContent | undefined {
+  if (!isMatrixImageKind(params.kind) && !isMatrixImageMime(params.contentType)) {
+    return undefined;
+  }
+  return {
+    type: "image",
+    data: params.dataBase64,
+    mimeType: params.contentType?.trim() || "image/jpeg",
+  };
+}
+
+export function filterMatrixMediaForContext(params: {
+  account: ResolvedMatrixAccount;
+  media: SavedMatrixMedia[];
+}): SavedMatrixMedia[] {
+  return params.media.filter((item) => {
+    const isImage = isMatrixImageKind(item.kind) || isMatrixImageMime(item.contentType);
+    if (isImage) {
+      return shouldIncludeMatrixImageMediaPaths(params.account);
+    }
+    return shouldIncludeMatrixOtherMediaPaths(params.account);
+  });
+}
+
+export function buildMatrixPromptImages(params: {
+  account: ResolvedMatrixAccount;
+  media: SavedMatrixMedia[];
+}): PromptImageContent[] {
+  if (!shouldPassMatrixPromptImages(params.account)) {
+    return [];
+  }
+  return params.media.flatMap((item) => (item.promptImage ? [item.promptImage] : []));
 }
 
 function resolveBaseRouteSession(params: {
@@ -281,15 +360,17 @@ export async function resolveMatrixReplyContext(params: {
   replyToBody?: string;
   replyToSender?: string;
   replyAttachmentTextBlocks: string[];
+  replyAttachmentMedia: SavedMatrixMedia[];
   replyPreviewTextBlocks: string[];
-  replyPreviewMedia: Array<{ path: string; contentType?: string }>;
+  replyPreviewMedia: SavedMatrixMedia[];
 }> {
   const replyToBody = params.replySummary?.body?.trim() || undefined;
-  if (!params.replySummary || !replyToBody) {
+  if (!params.replySummary) {
     return {
       replyToBody,
       replyToSender: undefined,
       replyAttachmentTextBlocks: [],
+      replyAttachmentMedia: [],
       replyPreviewTextBlocks: [],
       replyPreviewMedia: [],
     };
@@ -310,30 +391,69 @@ export async function resolveMatrixReplyContext(params: {
     }
   }
 
-  let replyPreviewTextBlocks: string[] = [];
-  let replyPreviewMedia: Array<{ path: string; contentType?: string }> = [];
+  let replyAttachmentTextBlocks: string[] = [];
+  let replyAttachmentMedia: SavedMatrixMedia[] = [];
   try {
-    const previewResult = params.client.resolveLinkPreviews({
-      bodyText: replyToBody,
-      maxBytes: resolveMediaMaxBytes(params.account),
-      includeImages: true,
-      xPreviewViaFxTwitter: params.account.config.xPreviewViaFxTwitter === true,
+    const downloaded = params.client.downloadMedia({
+      roomId: params.roomId,
+      eventId: params.replySummary.eventId,
     });
-    replyPreviewTextBlocks = previewResult.textBlocks;
-    replyPreviewMedia = await (params.persistPreviewMedia ?? savePreviewMedia)({
+    replyAttachmentTextBlocks = buildMatrixAttachmentTextBlocks({
+      attachments: [
+        {
+          index: 0,
+          filename: downloaded.filename,
+          contentType: downloaded.contentType,
+          kind: downloaded.kind,
+        },
+      ],
+      heading: "Reply attachments",
+      itemLabel: "Reply attachment",
+    });
+    replyAttachmentMedia = await (params.persistPreviewMedia ?? savePreviewMedia)({
       account: params.account,
-      media: previewResult.media,
+      media: [
+        {
+          dataBase64: downloaded.dataBase64,
+          contentType: downloaded.contentType,
+          filename: downloaded.filename,
+          kind: downloaded.kind,
+        },
+      ],
     });
   } catch (err) {
     params.log?.debug?.(
-      `[matrix:${params.account.accountId}] reply preview resolution failed for ${params.replyToId ?? "unknown"}: ${String(err)}`,
+      `[matrix:${params.account.accountId}] reply media lookup skipped for ${params.replySummary.eventId}: ${String(err)}`,
     );
+  }
+
+  let replyPreviewTextBlocks: string[] = [];
+  let replyPreviewMedia: SavedMatrixMedia[] = [];
+  if (replyToBody) {
+    try {
+      const previewResult = params.client.resolveLinkPreviews({
+        bodyText: replyToBody,
+        maxBytes: resolveMediaMaxBytes(params.account),
+        includeImages: true,
+        xPreviewViaFxTwitter: params.account.config.xPreviewViaFxTwitter === true,
+      });
+      replyPreviewTextBlocks = previewResult.textBlocks;
+      replyPreviewMedia = await (params.persistPreviewMedia ?? savePreviewMedia)({
+        account: params.account,
+        media: previewResult.media.map((item) => ({ ...item, kind: "image" })),
+      });
+    } catch (err) {
+      params.log?.debug?.(
+        `[matrix:${params.account.accountId}] reply preview resolution failed for ${params.replyToId ?? "unknown"}: ${String(err)}`,
+      );
+    }
   }
 
   return {
     replyToBody,
     replyToSender,
-    replyAttachmentTextBlocks: [],
+    replyAttachmentTextBlocks,
+    replyAttachmentMedia,
     replyPreviewTextBlocks,
     replyPreviewMedia,
   };
@@ -561,7 +681,7 @@ async function saveInboundMedia(params: {
   account: ResolvedMatrixAccount;
   client: MatrixNativeClient;
   event: MatrixInboundEvent;
-}): Promise<Array<{ path: string; contentType?: string }>> {
+}): Promise<SavedMatrixMedia[]> {
   const { account, client, event } = params;
   if (event.media.length === 0) {
     return [];
@@ -569,7 +689,7 @@ async function saveInboundMedia(params: {
 
   const runtime = getMatrixRustRuntime() as any;
   const maxBytes = resolveMediaMaxBytes(account);
-  const saved: Array<{ path: string; contentType?: string }> = [];
+  const saved: SavedMatrixMedia[] = [];
 
   for (const item of event.media) {
     const downloaded = client.downloadMedia({
@@ -585,7 +705,14 @@ async function saveInboundMedia(params: {
     );
     saved.push({
       path: persisted.path,
+      filename: downloaded.filename ?? item.filename,
+      kind: item.kind,
       contentType: persisted.contentType ?? downloaded.contentType ?? item.contentType,
+      promptImage: buildPromptImageFromBase64({
+        dataBase64: downloaded.dataBase64,
+        contentType: downloaded.contentType ?? item.contentType,
+        kind: item.kind,
+      }),
     });
   }
 
@@ -594,11 +721,11 @@ async function saveInboundMedia(params: {
 
 async function savePreviewMedia(params: {
   account: ResolvedMatrixAccount;
-  media: Array<{ dataBase64: string; contentType?: string; filename?: string }>;
-}): Promise<Array<{ path: string; contentType?: string }>> {
+  media: Array<{ dataBase64: string; contentType?: string; filename?: string; kind?: string }>;
+}): Promise<SavedMatrixMedia[]> {
   const runtime = getMatrixRustRuntime() as any;
   const maxBytes = resolveMediaMaxBytes(params.account);
-  const saved: Array<{ path: string; contentType?: string }> = [];
+  const saved: SavedMatrixMedia[] = [];
   for (const item of params.media) {
     const persisted = await runtime.channel.media.saveMediaBuffer(
       Buffer.from(item.dataBase64, "base64"),
@@ -609,7 +736,14 @@ async function savePreviewMedia(params: {
     );
     saved.push({
       path: persisted.path,
+      filename: item.filename,
+      kind: item.kind,
       contentType: persisted.contentType ?? item.contentType,
+      promptImage: buildPromptImageFromBase64({
+        dataBase64: item.dataBase64,
+        contentType: item.contentType,
+        kind: item.kind,
+      }),
     });
   }
   return saved;
@@ -794,7 +928,7 @@ export async function handleMatrixInboundEvent(params: {
     attachments: event.media,
   });
   let previewTextBlocks: string[] = [];
-  let previewMedia: Array<{ path: string; contentType?: string }> = [];
+  let previewMedia: SavedMatrixMedia[] = [];
   try {
     const previewResult = client.resolveLinkPreviews({
       bodyText: baseBodyText,
@@ -805,7 +939,7 @@ export async function handleMatrixInboundEvent(params: {
     previewTextBlocks = previewResult.textBlocks;
     previewMedia = await savePreviewMedia({
       account,
-      media: previewResult.media,
+      media: previewResult.media.map((item) => ({ ...item, kind: "image" })),
     });
   } catch (err) {
     log?.debug?.(
@@ -963,11 +1097,20 @@ export async function handleMatrixInboundEvent(params: {
         })
       : [];
 
-  const media = [
+  const collectedMedia: SavedMatrixMedia[] = [
     ...(await saveInboundMedia({ account, client, event })),
+    ...replyContext.replyAttachmentMedia,
     ...replyContext.replyPreviewMedia,
     ...previewMedia,
   ];
+  const media = filterMatrixMediaForContext({
+    account,
+    media: collectedMedia,
+  });
+  const promptImages = buildMatrixPromptImages({
+    account,
+    media: collectedMedia,
+  });
   const conversationLabel = isDirectMessage
     ? (event.senderName ?? event.senderId)
     : (event.roomName ?? event.roomAlias ?? event.roomId);
@@ -1037,16 +1180,18 @@ export async function handleMatrixInboundEvent(params: {
         ? replyContext.replyPreviewTextBlocks
         : undefined,
     ReplyMediaPaths:
-      !threadTarget && replyContext.replyPreviewMedia.length > 0
-        ? replyContext.replyPreviewMedia.map((item) => item.path)
+      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
+        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map((item) => item.path)
         : undefined,
     ReplyMediaUrls:
-      !threadTarget && replyContext.replyPreviewMedia.length > 0
-        ? replyContext.replyPreviewMedia.map((item) => item.path)
+      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
+        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map((item) => item.path)
         : undefined,
     ReplyMediaTypes:
-      !threadTarget && replyContext.replyPreviewMedia.length > 0
-        ? replyContext.replyPreviewMedia.map((item) => item.contentType ?? "")
+      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
+        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map(
+            (item) => item.contentType ?? "",
+          )
         : undefined,
     MessageThreadId: threadTarget,
     Timestamp: eventTimestamp,
@@ -1167,6 +1312,7 @@ export async function handleMatrixInboundEvent(params: {
     },
     replyOptions: {
       ...replyOptions,
+      images: promptImages.length > 0 ? promptImages : undefined,
       skillFilter: roomConfig?.skills,
       onModelSelected,
     },

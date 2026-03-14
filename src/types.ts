@@ -17,6 +17,7 @@ export type MatrixKeyBackupState = "disabled" | "pending" | "enabled";
 export type MatrixChatType = "direct" | "channel" | "thread";
 export type MatrixMediaKind = "image" | "video" | "audio" | "file";
 export type MatrixLinkPreviewSourceKind = "synapse" | "fx_twitter";
+export type MatrixImageHandlingMode = "dual" | "multimodal-only" | "analysis-only";
 
 export type MatrixRoomConfig = {
   enabled?: boolean;
@@ -49,6 +50,8 @@ export type MatrixChannelAccountConfig = {
   roomHistoryMaxEntries?: number;
   mediaMaxMb?: number;
   xPreviewViaFxTwitter?: boolean;
+  imageHandlingMode?: MatrixImageHandlingMode;
+  otherMediaPaths?: boolean;
   autoJoin?: MatrixAutoJoinMode;
   groupAllowFrom?: string[];
   dm?: {
