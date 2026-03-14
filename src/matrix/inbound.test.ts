@@ -12,7 +12,9 @@ import {
   sendMatrixMedia,
 } from "./inbound.js";
 import {
+  buildMatrixAttachmentTextBlocks,
   buildMatrixEnrichedBodyText,
+  buildMatrixEventContextLine,
   renderMatrixFormattedBody,
   resolveMatrixBodyForAgent,
   resolveMatrixInboundSenderLabel,
@@ -284,6 +286,7 @@ test("stores readable BodyForAgent and enveloped Body for group thread messages"
     event,
     isDirectMessage: false,
     conversationLabel: "Infra",
+    attachmentTextBlocks: [],
     previewTextBlocks: [],
     eventTimestamp: Date.now(),
     previousTimestamp: 123,
@@ -294,34 +297,74 @@ test("stores readable BodyForAgent and enveloped Body for group thread messages"
   assert.equal(presentation.senderUsername, "bu");
   assert.equal(presentation.senderLabel, "Bu (bu)");
   assert.equal(presentation.baseBodyText, "hello :party_parrot:");
-  assert.equal(presentation.bodyForAgent, "Bu (bu): hello :party_parrot:");
-  assert.match(presentation.body, /^formatted:Bu \(bu\):hello :party_parrot:/);
-  assert.match(
-    presentation.body,
-    /\[matrix event id: \$event room: !room:example\.org thread: \$thread-root\]/,
+  assert.equal(
+    presentation.bodyForAgent,
+    'Bu (bu): hello :party_parrot:\n[Matrix event] room="!room:example.org" event="$event" thread="$thread-root"',
   );
+  assert.match(presentation.body, /^formatted:Bu \(bu\):hello :party_parrot:/);
+  assert.match(presentation.body, /\[Matrix event\] room="!room:example\.org" event="\$event" thread="\$thread-root"/);
 });
 
 test("formats reply preview blocks separately from current-message previews", () => {
   assert.equal(
     buildMatrixEnrichedBodyText({
       baseBodyText: "current body",
+      attachmentTextBlocks: ['[Attachments: 1]', '[Attachment 1] filename="photo.jpg" type="image/jpeg"'],
       replyToId: "$parent",
       replyToSender: "Alice",
       replyToBody: "look at https://x.com/example/status/1",
+      replyAttachmentTextBlocks: ['[Reply attachments: 1]', '[Reply attachment 1] filename="reply.png" type="image/png"'],
       replyPreviewTextBlocks: ["[Tweet: Alice (@alice)]\nhello"],
       previewTextBlocks: ["[Link preview: example.org]\ncurrent preview"],
+      eventContextLine: '[Matrix event] room="!room:example.org" event="$event"',
     }),
     [
       "current body",
+      "[Attachments: 1]",
+      '[Attachment 1] filename="photo.jpg" type="image/jpeg"',
       "[Replying to Alice id:$parent]",
       "look at https://x.com/example/status/1",
+      "[Reply attachments: 1]",
+      '[Reply attachment 1] filename="reply.png" type="image/png"',
       "[Reply link preview]",
       "[Tweet: Alice (@alice)]",
       "hello",
       "[Link preview: example.org]",
       "current preview",
+      '[Matrix event] room="!room:example.org" event="$event"',
     ].join("\n"),
+  );
+});
+
+test("builds stable attachment manifest text with fallback values", () => {
+  assert.deepEqual(
+    buildMatrixAttachmentTextBlocks({
+      attachments: [
+        {
+          index: 0,
+          filename: "photo.jpg",
+          contentType: "image/jpeg",
+          kind: "image",
+        },
+        {
+          index: 1,
+          kind: "file",
+        },
+      ],
+    }),
+    [
+      "[Attachments: 2]",
+      '[Attachment 1] filename="photo.jpg" type="image/jpeg"',
+      '[Attachment 2] filename="file-2" type="application/octet-stream"',
+    ],
+  );
+  assert.equal(
+    buildMatrixEventContextLine({
+      roomId: "!room:example.org",
+      eventId: "$event",
+      threadRootId: "$thread",
+    }),
+    '[Matrix event] room="!room:example.org" event="$event" thread="$thread"',
   );
 });
 
@@ -388,6 +431,7 @@ test("resolves reply context with display names and one-hop previews", async () 
 
   assert.equal(replyContext.replyToBody, "look at https://x.com/example/status/1");
   assert.equal(replyContext.replyToSender, "Alice");
+  assert.deepEqual(replyContext.replyAttachmentTextBlocks, []);
   assert.deepEqual(replyContext.replyPreviewTextBlocks, ["[Tweet: Alice (@alice)]\nhello from x"]);
   assert.deepEqual(replyContext.replyPreviewMedia, [
     { path: "/tmp/reply-preview.png", contentType: "image/png" },
@@ -636,6 +680,14 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
       eventId: "$event-1",
       body: "just chatting",
       timestamp: firstTimestamp,
+      media: [
+        {
+          index: 0,
+          kind: "image",
+          filename: "buffered.png",
+          contentType: "image/png",
+        },
+      ],
     }),
   });
 
@@ -671,11 +723,19 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
 
   assert.equal(recorded.length, 1);
   const ctx = recorded[0]?.ctx as Record<string, unknown>;
-  assert.equal(ctx.BodyForAgent, "Bu (bu): @bot what do you think?");
+  assert.equal(
+    ctx.BodyForAgent,
+    'Bu (bu): @bot what do you think?\n[Matrix event] room="!room:example.org" event="$event-2"',
+  );
   assert.deepEqual(ctx.InboundHistory, [
     {
       sender: "Alice (alice)",
-      body: "just chatting",
+      body: [
+        "just chatting",
+        "[Attachments: 1]",
+        '[Attachment 1] filename="buffered.png" type="image/png"',
+        '[Matrix event] room="!room:example.org" event="$event-1"',
+      ].join("\n"),
       timestamp: Date.parse(firstTimestamp),
     },
   ]);
@@ -869,7 +929,7 @@ test("does not leak pending room history across accounts sharing the same room i
   assert.deepEqual(workCtx.InboundHistory, [
     {
       sender: "Alice (alice)",
-      body: "from work account",
+      body: 'from work account\n[Matrix event] room="!room:example.org" event="$work-buffered"',
       timestamp: Date.parse(workTimestamp),
     },
   ]);

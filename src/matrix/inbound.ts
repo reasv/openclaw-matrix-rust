@@ -30,7 +30,9 @@ import {
   resolveMatrixAllowListMatches,
 } from "./allowlist.js";
 import {
+  buildMatrixAttachmentTextBlocks,
   buildMatrixEnrichedBodyText,
+  buildMatrixEventContextLine,
   resolveMatrixBodyForAgent,
   resolveMatrixInboundSenderLabel,
   resolveMatrixReadableBody,
@@ -174,11 +176,14 @@ export function buildMatrixInboundPresentation(params: {
     | "eventId"
     | "threadRootId"
     | "replyToId"
+    | "media"
   >;
   isDirectMessage: boolean;
   conversationLabel: string;
+  attachmentTextBlocks?: string[];
   replyToBody?: string;
   replyToSender?: string;
+  replyAttachmentTextBlocks?: string[];
   replyPreviewTextBlocks?: string[];
   previewTextBlocks: string[];
   eventTimestamp?: number;
@@ -217,22 +222,26 @@ export function buildMatrixInboundPresentation(params: {
   });
   const bodyText = buildMatrixEnrichedBodyText({
     baseBodyText,
+    attachmentTextBlocks: params.attachmentTextBlocks,
     replyToId: params.event.replyToId,
     replyToBody: params.replyToBody,
     replyToSender: params.replyToSender,
+    replyAttachmentTextBlocks: params.replyAttachmentTextBlocks,
     replyPreviewTextBlocks: params.replyPreviewTextBlocks,
     previewTextBlocks: params.previewTextBlocks,
+    eventContextLine: buildMatrixEventContextLine({
+      roomId: params.event.roomId,
+      eventId: params.event.eventId,
+      threadRootId: params.event.threadRootId,
+    }),
   });
-  const textWithId = params.event.threadRootId
-    ? `${bodyText}\n[matrix event id: ${params.event.eventId} room: ${params.event.roomId} thread: ${params.event.threadRootId}]`
-    : `${bodyText}\n[matrix event id: ${params.event.eventId} room: ${params.event.roomId}]`;
   const body = params.formatInboundEnvelope({
     channel: "Matrix",
     from: params.conversationLabel,
     timestamp: Number.isFinite(params.eventTimestamp) ? params.eventTimestamp : undefined,
     previousTimestamp: params.previousTimestamp,
     envelope: params.envelopeOptions,
-    body: textWithId,
+    body: bodyText,
     chatType: params.isDirectMessage ? "direct" : "channel",
     senderLabel,
   });
@@ -271,6 +280,7 @@ export async function resolveMatrixReplyContext(params: {
 }): Promise<{
   replyToBody?: string;
   replyToSender?: string;
+  replyAttachmentTextBlocks: string[];
   replyPreviewTextBlocks: string[];
   replyPreviewMedia: Array<{ path: string; contentType?: string }>;
 }> {
@@ -279,6 +289,7 @@ export async function resolveMatrixReplyContext(params: {
     return {
       replyToBody,
       replyToSender: undefined,
+      replyAttachmentTextBlocks: [],
       replyPreviewTextBlocks: [],
       replyPreviewMedia: [],
     };
@@ -322,6 +333,7 @@ export async function resolveMatrixReplyContext(params: {
   return {
     replyToBody,
     replyToSender,
+    replyAttachmentTextBlocks: [],
     replyPreviewTextBlocks,
     replyPreviewMedia,
   };
@@ -778,6 +790,9 @@ export async function handleMatrixInboundEvent(params: {
   });
   const replyToBody = replyContext.replyToBody;
   const replyToSender = replyContext.replyToSender;
+  const attachmentTextBlocks = buildMatrixAttachmentTextBlocks({
+    attachments: event.media,
+  });
   let previewTextBlocks: string[] = [];
   let previewMedia: Array<{ path: string; contentType?: string }> = [];
   try {
@@ -799,11 +814,18 @@ export async function handleMatrixInboundEvent(params: {
   }
   const historyBodyText = buildMatrixEnrichedBodyText({
     baseBodyText,
+    attachmentTextBlocks,
     replyToId: event.replyToId,
     replyToBody,
     replyToSender,
+    replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
     replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
     previewTextBlocks,
+    eventContextLine: buildMatrixEventContextLine({
+      roomId: event.roomId,
+      eventId: event.eventId,
+      threadRootId: event.threadRootId,
+    }),
   });
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
     await resolveMatrixAccessState({
@@ -974,8 +996,10 @@ export async function handleMatrixInboundEvent(params: {
     event,
     isDirectMessage,
     conversationLabel,
+    attachmentTextBlocks,
     replyToBody,
     replyToSender,
+    replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
     replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
     previewTextBlocks,
     eventTimestamp,

@@ -8,6 +8,13 @@ const MXC_URI_RE = /\bmxc:\/\/[^\s<>"')]+/gi;
 const MXC_ONLY_TEXT_RE = /^(?:\s*mxc:\/\/[^\s<>"')]+\s*)+$/i;
 const BARE_SHORTCODE_RE = /^[A-Za-z0-9_+-]+$/;
 
+export type MatrixAttachmentTextEntry = {
+  index: number;
+  filename?: string;
+  contentType?: string;
+  kind?: string;
+};
+
 export function resolveMatrixSenderUsername(senderId: string): string | undefined {
   const username = senderId.split(":")[0]?.replace(/^@/, "").trim();
   return username ? username : undefined;
@@ -37,16 +44,89 @@ export function resolveMatrixBodyForAgent(params: {
   return `${params.senderLabel}: ${params.bodyText}`;
 }
 
+function quoteMatrixAttachmentValue(value: string): string {
+  return value.replace(/["\r\n\t]+/g, " ").trim();
+}
+
+function resolveMatrixAttachmentFilename(entry: MatrixAttachmentTextEntry): string {
+  const filename = entry.filename?.trim();
+  if (filename) {
+    return quoteMatrixAttachmentValue(filename);
+  }
+  const kind = entry.kind?.trim() || "attachment";
+  return `${kind}-${entry.index + 1}`;
+}
+
+function resolveMatrixAttachmentType(entry: MatrixAttachmentTextEntry): string {
+  const contentType = entry.contentType?.trim();
+  if (contentType) {
+    return quoteMatrixAttachmentValue(contentType);
+  }
+  const kind = entry.kind?.trim();
+  if (!kind) {
+    return "application/octet-stream";
+  }
+  if (kind === "image" || kind === "audio" || kind === "video") {
+    return `${kind}/*`;
+  }
+  return "application/octet-stream";
+}
+
+export function buildMatrixAttachmentTextBlocks(params: {
+  attachments?: MatrixAttachmentTextEntry[];
+  heading?: string;
+  itemLabel?: string;
+}): string[] {
+  const attachments = (params.attachments ?? []).filter(
+    (entry) =>
+      Boolean(
+        entry.filename?.trim() ||
+          entry.contentType?.trim() ||
+          entry.kind?.trim(),
+      ),
+  );
+  if (attachments.length === 0) {
+    return [];
+  }
+  const heading = params.heading?.trim() || "Attachments";
+  const itemLabel = params.itemLabel?.trim() || "Attachment";
+  const lines = [`[${heading}: ${attachments.length}]`];
+  for (const entry of attachments) {
+    lines.push(
+      `[${itemLabel} ${entry.index + 1}] filename="${resolveMatrixAttachmentFilename(entry)}" type="${resolveMatrixAttachmentType(entry)}"`,
+    );
+  }
+  return lines;
+}
+
+export function buildMatrixEventContextLine(params: {
+  roomId: string;
+  eventId: string;
+  threadRootId?: string;
+}): string {
+  const roomId = params.roomId.trim();
+  const eventId = params.eventId.trim();
+  const threadRootId = params.threadRootId?.trim();
+  if (threadRootId) {
+    return `[Matrix event] room="${roomId}" event="${eventId}" thread="${threadRootId}"`;
+  }
+  return `[Matrix event] room="${roomId}" event="${eventId}"`;
+}
+
 export function buildMatrixEnrichedBodyText(params: {
   baseBodyText: string;
+  attachmentTextBlocks?: string[];
   replyToId?: string;
   replyToBody?: string;
   replyToSender?: string;
+  replyAttachmentTextBlocks?: string[];
   replyPreviewTextBlocks?: string[];
   previewTextBlocks: string[];
+  eventContextLine?: string;
 }): string {
   return [
     params.baseBodyText,
+    ...(params.attachmentTextBlocks ?? []),
     ...(params.replyToBody
       ? [
           `[Replying to ${params.replyToSender ?? "Unknown"}${
@@ -55,8 +135,10 @@ export function buildMatrixEnrichedBodyText(params: {
           params.replyToBody,
         ]
       : []),
+    ...(params.replyAttachmentTextBlocks ?? []),
     ...((params.replyPreviewTextBlocks ?? []).flatMap((block) => ["[Reply link preview]", block])),
     ...params.previewTextBlocks,
+    params.eventContextLine,
   ]
     .filter(Boolean)
     .join("\n")
