@@ -23,17 +23,23 @@ import {
 } from "./matrix/accounts.js";
 import { resolveNativeConfig } from "./matrix/adapter/config.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
-import { handleMatrixInboundEvent, sendMatrixMedia } from "./matrix/inbound.js";
+import {
+  handleMatrixInboundEvent,
+  resolveMatrixInboundRoute,
+  sendMatrixMedia,
+} from "./matrix/inbound.js";
 import {
   createMatrixRoomHistoryBuffer,
   resolveMatrixRoomHistoryMaxEntries,
   type MatrixRoomHistoryBuffer,
 } from "./matrix/history-buffer.js";
+import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
 import { backfillMatrixRoomHistory } from "./matrix/startup-backfill.js";
 import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
 const activeRoomHistories = new Map<string, MatrixRoomHistoryBuffer>();
+const activeInboundDispatchers = new Map<string, MatrixSessionDispatcher>();
 
 const meta = {
   id: "matrix",
@@ -88,10 +94,22 @@ function getOrCreateMatrixRoomHistory(account: ResolvedMatrixAccount): MatrixRoo
   return next;
 }
 
+function getOrCreateMatrixInboundDispatcher(account: ResolvedMatrixAccount): MatrixSessionDispatcher {
+  const normalized = normalizeAccountId(account.accountId);
+  const existing = activeInboundDispatchers.get(normalized);
+  if (existing) {
+    return existing;
+  }
+  const next = new MatrixSessionDispatcher();
+  activeInboundDispatchers.set(normalized, next);
+  return next;
+}
+
 function destroyMatrixClient(accountId: string): void {
   const normalized = normalizeAccountId(accountId);
   activeClients.delete(normalized);
   activeRoomHistories.delete(normalized);
+  activeInboundDispatchers.delete(normalized);
 }
 
 function buildStatusFromDiagnostics(
@@ -161,6 +179,8 @@ export async function processNativeEvents(params: {
   client: MatrixNativeClient;
   cfg: CoreConfig;
   handleInboundEvent?: typeof handleMatrixInboundEvent;
+  inboundDispatcher?: MatrixSessionDispatcher;
+  resolveInboundRoute?: typeof resolveMatrixInboundRoute;
 }): Promise<void> {
   const {
     events,
@@ -171,19 +191,45 @@ export async function processNativeEvents(params: {
     client,
     cfg,
     handleInboundEvent = handleMatrixInboundEvent,
+    inboundDispatcher,
+    resolveInboundRoute = resolveMatrixInboundRoute,
   } = params;
 
   for (const event of events) {
     try {
       if (event.type === "inbound") {
-        await handleInboundEvent({
+        if (!inboundDispatcher) {
+          await handleInboundEvent({
+            cfg,
+            account,
+            client,
+            event: event.event,
+            roomHistory,
+            log,
+          });
+          continue;
+        }
+        const route = resolveInboundRoute({
           cfg,
           account,
-          client,
           event: event.event,
-          roomHistory,
-          log,
         });
+        void inboundDispatcher
+          .enqueue(route.sessionKey, async () => {
+            await handleInboundEvent({
+              cfg,
+              account,
+              client,
+              event: event.event,
+              roomHistory,
+              log,
+            });
+          })
+          .catch((err) => {
+            log?.info?.(
+              `[matrix:${account.accountId}] native event failed (room=${event.event.roomId} event=${event.event.eventId}): ${String(err)}`,
+            );
+          });
         continue;
       }
 
@@ -460,6 +506,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
 
       const client = getOrCreateMatrixClient(account.accountId);
       const roomHistory = getOrCreateMatrixRoomHistory(account);
+      const inboundDispatcher = getOrCreateMatrixInboundDispatcher(account);
       const diagnostics = client.start(
         resolveNativeConfig({
           account,
@@ -494,10 +541,17 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
             setStatus: ctx.setStatus,
             client,
             cfg: ctx.cfg as CoreConfig,
+            inboundDispatcher,
           });
           await sleep(250, ctx.abortSignal);
         }
       } finally {
+        const drained = await inboundDispatcher.waitForIdle({ timeoutMs: 30_000 });
+        if (!drained) {
+          ctx.log?.info?.(
+            `[matrix:${account.accountId}] inbound dispatcher did not drain before shutdown`,
+          );
+        }
         client.stop();
         destroyMatrixClient(account.accountId);
         ctx.setStatus({

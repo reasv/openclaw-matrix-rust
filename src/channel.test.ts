@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { processNativeEvents } from "./channel.js";
 import { createMatrixRoomHistoryBuffer } from "./matrix/history-buffer.js";
+import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
 import type {
   CoreConfig,
   MatrixInboundEvent,
@@ -57,9 +58,146 @@ function createDiagnostics(): MatrixNativeDiagnostics {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function createRoute(sessionKey: string) {
+  return {
+    agentId: "main",
+    accountId: "default",
+    mainSessionKey: "agent:main:main",
+    parentSessionKey: sessionKey,
+    sessionKey,
+    lastRoutePolicy: "session" as const,
+    isDirectMessage: false,
+    roomConfigInfo: {
+      allowed: false,
+      allowlistConfigured: false,
+    },
+  };
+}
+
+test("processNativeEvents serializes inbound work for the same session key", async () => {
+  const account = createAccount();
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
+  const releaseFirst = createDeferred<void>();
+  const firstStarted = createDeferred<void>();
+  const handledInbound: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const events: MatrixNativeEvent[] = [
+    {
+      type: "inbound",
+      event: createInboundEvent("$first"),
+    },
+    {
+      type: "inbound",
+      event: createInboundEvent("$second"),
+    },
+  ];
+
+  await processNativeEvents({
+    events,
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    resolveInboundRoute: () => createRoute("agent:main:matrix:channel:!room:example.org"),
+    handleInboundEvent: async ({ event }) => {
+      handledInbound.push(`start:${event.eventId}`);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (event.eventId === "$first") {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+      handledInbound.push(`end:${event.eventId}`);
+      inFlight -= 1;
+    },
+  });
+
+  await firstStarted.promise;
+  assert.deepEqual(handledInbound, ["start:$first"]);
+  assert.equal(dispatcher.getPendingCountForSession("agent:main:matrix:channel:!room:example.org"), 2);
+
+  releaseFirst.resolve();
+  await dispatcher.waitForIdle({ timeoutMs: 1_000 });
+
+  assert.equal(maxInFlight, 1);
+  assert.deepEqual(handledInbound, ["start:$first", "end:$first", "start:$second", "end:$second"]);
+});
+
+test("processNativeEvents runs different session keys in parallel", async () => {
+  const account = createAccount();
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
+  const releaseBoth = createDeferred<void>();
+  const started = new Set<string>();
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const events: MatrixNativeEvent[] = [
+    {
+      type: "inbound",
+      event: createInboundEvent("$first"),
+    },
+    {
+      type: "inbound",
+      event: createInboundEvent("$second"),
+    },
+  ];
+
+  await processNativeEvents({
+    events,
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    resolveInboundRoute: ({ event }) =>
+      createRoute(
+        event.eventId === "$first"
+          ? "agent:main:matrix:channel:!room-a:example.org"
+          : "agent:main:matrix:channel:!room-b:example.org",
+      ),
+    handleInboundEvent: async ({ event }) => {
+      started.add(event.eventId);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await releaseBoth.promise;
+      inFlight -= 1;
+    },
+  });
+
+  while (started.size < 2) {
+    await Promise.resolve();
+  }
+  assert.equal(maxInFlight, 2);
+
+  releaseBoth.resolve();
+  assert.equal(await dispatcher.waitForIdle({ timeoutMs: 1_000 }), true);
+});
+
 test("processNativeEvents keeps draining after one inbound event fails", async () => {
   const account = createAccount();
   const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
   const logs: string[] = [];
   const statuses: Array<Record<string, unknown>> = [];
   const handledInbound: string[] = [];
@@ -96,6 +234,13 @@ test("processNativeEvents keeps draining after one inbound event fails", async (
       diagnostics: () => createDiagnostics(),
     } as any,
     cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    resolveInboundRoute: ({ event }) =>
+      createRoute(
+        event.eventId === "$first"
+          ? "agent:main:matrix:channel:!room-a:example.org"
+          : "agent:main:matrix:channel:!room-b:example.org",
+      ),
     handleInboundEvent: async ({ event }) => {
       handledInbound.push(event.eventId);
       if (event.eventId === "$first") {
@@ -104,12 +249,16 @@ test("processNativeEvents keeps draining after one inbound event fails", async (
     },
   });
 
+  assert.equal(await dispatcher.waitForIdle({ timeoutMs: 1_000 }), true);
   assert.deepEqual(handledInbound, ["$first", "$second"]);
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0]?.syncState, "ready");
-  assert.match(
-    logs[0] ?? "",
-    /\[matrix:default\] native event failed \(room=!room:example\.org event=\$first\): Error: boom/,
+  assert.ok(logs.includes("[matrix:default] sync_state=ready"));
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] native event failed \(room=!room:example\.org event=\$first\): Error: boom/.test(
+        message,
+      ),
+    ),
   );
-  assert.equal(logs[1], "[matrix:default] sync_state=ready");
 });
