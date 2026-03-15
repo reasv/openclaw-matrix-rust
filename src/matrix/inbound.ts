@@ -1066,8 +1066,9 @@ export async function handleMatrixInboundEvent(params: {
   event: MatrixInboundEvent;
   roomHistory: MatrixRoomHistoryBuffer;
   log?: { info?: (message: string) => void; debug?: (message: string) => void };
+  skipStartupGrace?: boolean;
 }): Promise<void> {
-  const { cfg, account, client, event, roomHistory, log } = params;
+  const { cfg, account, client, event, roomHistory, log, skipStartupGrace } = params;
   const runtime = getMatrixRustRuntime() as any;
   const diagnostics = client.diagnostics();
   if (event.senderId === diagnostics.userId) {
@@ -1077,6 +1078,7 @@ export async function handleMatrixInboundEvent(params: {
   const eventTimestamp = Date.parse(event.timestamp);
   const startupTimestamp = diagnostics.startedAt ? Date.parse(diagnostics.startedAt) : NaN;
   if (
+    !skipStartupGrace &&
     Number.isFinite(eventTimestamp) &&
     Number.isFinite(startupTimestamp) &&
     eventTimestamp < startupTimestamp - DEFAULT_STARTUP_GRACE_MS

@@ -29,6 +29,7 @@ import {
   resolveMatrixRoomHistoryMaxEntries,
   type MatrixRoomHistoryBuffer,
 } from "./matrix/history-buffer.js";
+import { backfillMatrixRoomHistory } from "./matrix/startup-backfill.js";
 import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
@@ -466,6 +467,21 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         }),
       );
       ctx.setStatus(buildStatusFromDiagnostics(account, diagnostics));
+
+      try {
+        await backfillMatrixRoomHistory({
+          account,
+          client,
+          roomHistory,
+          runtime: getMatrixRustRuntime(),
+          cfg: ctx.cfg as CoreConfig,
+          log: ctx.log,
+        });
+      } catch (err) {
+        ctx.log?.info?.(
+          `[matrix:${account.accountId}] startup backfill failed: ${String(err)}`,
+        );
+      }
 
       try {
         while (!ctx.abortSignal.aborted) {

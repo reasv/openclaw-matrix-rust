@@ -1073,6 +1073,81 @@ test("clears buffered room history after inbound session recording succeeds", as
   );
 });
 
+test("skipStartupGrace allows startup backfill events to be replayed once", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    dm: {
+      policy: "open",
+    },
+  } as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    diagnostics: () => ({
+      accountId: "default",
+      userId: "@bot:example.org",
+      deviceId: "DEVICE",
+      verificationState: "verified",
+      keyBackupState: "enabled",
+      syncState: "ready",
+      lastSuccessfulSyncAt: null,
+      lastSuccessfulDecryptionAt: null,
+      startedAt: "2026-03-15T12:00:00.000Z",
+    }),
+  } as any;
+  const event = createInboundEvent({
+    roomId: "!dm:example.org",
+    chatType: "direct",
+    timestamp: "2026-03-15T11:59:00.000Z",
+  });
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        dm: {
+          policy: "open",
+        },
+      },
+    },
+  } as CoreConfig;
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account,
+    client,
+    roomHistory,
+    event,
+  });
+  assert.equal(recorded.length, 0);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event,
+      skipStartupGrace: true,
+    }),
+    stopAfterRecord,
+  );
+  assert.equal(recorded.length, 1);
+});
+
 test("auto-downloads room attachments into the agent workspace and advertises relative paths", async () => {
   const stopAfterRecord = createRecordStopError();
   const recorded: Array<Record<string, unknown>> = [];
