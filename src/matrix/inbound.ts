@@ -503,12 +503,11 @@ export function buildMatrixInboundPresentation(params: {
   };
 }
 
-function consumeInboundHistory(params: {
+function snapshotInboundHistory(params: {
   roomHistory: MatrixRoomHistoryBuffer;
   scopeKey: string;
 }): Array<{ sender: string; body: string; timestamp?: number }> {
   const buffered = params.roomHistory.snapshot(params.scopeKey);
-  params.roomHistory.clear(params.scopeKey);
   return buffered.slice(0, -1);
 }
 
@@ -1354,7 +1353,7 @@ export async function handleMatrixInboundEvent(params: {
   }
   const inboundHistory =
     isRoom
-      ? consumeInboundHistory({
+      ? snapshotInboundHistory({
           roomHistory,
           scopeKey: historyScopeKey,
         })
@@ -1495,6 +1494,10 @@ export async function handleMatrixInboundEvent(params: {
         }
       : undefined,
   });
+
+  if (isRoom) {
+    roomHistory.clear(historyScopeKey);
+  }
 
   log?.debug?.(
     `[matrix:${account.accountId}] inbound ${event.eventId} room=${event.roomId} sender=${event.senderId}`,

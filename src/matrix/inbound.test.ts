@@ -52,7 +52,7 @@ function createRecordStopError() {
 }
 
 function createRuntimeForInboundTests(params: {
-  onRecordInboundSession: (payload: Record<string, unknown>) => Promise<never>;
+  onRecordInboundSession: (payload: Record<string, unknown>) => Promise<unknown>;
 }) {
   return {
     state: {
@@ -928,6 +928,101 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
       timestamp: Date.parse(firstTimestamp),
     },
   ]);
+  const retainedHistory = roomHistory.snapshot("default:!room:example.org");
+  assert.equal(retainedHistory.length, 2);
+  assert.deepEqual(retainedHistory[0], {
+    sender: "Alice (alice)",
+    body: [
+      "just chatting",
+      "[Attachments: 1]",
+      '[Attachment 1] filename="buffered.png" type="image/png"',
+    ].join("\n"),
+    timestamp: Date.parse(firstTimestamp),
+  });
+  assert.equal(retainedHistory[1]?.sender, "Bu (bu)");
+  assert.equal(retainedHistory[1]?.body, "@bot what do you think?");
+  assert.equal(typeof retainedHistory[1]?.timestamp, "number");
+});
+
+test("clears buffered room history after inbound session recording succeeds", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const runtime = createRuntimeForInboundTests({
+    onRecordInboundSession: async (payload) => {
+      recorded.push(payload);
+    },
+  });
+  runtime.channel.reactions = {
+    shouldAckReaction: () => true,
+  };
+  setMatrixRustRuntime(runtime);
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+  } as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    reactMessage: () => {
+      throw new Error("ack failed");
+    },
+  };
+
+  await handleMatrixInboundEvent({
+    cfg: {
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          password: "secret",
+          groupPolicy: "open",
+        },
+      },
+    } as CoreConfig,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$event-1",
+      body: "just chatting",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg: {
+        channels: {
+          matrix: {
+            homeserver: "https://matrix.example.org",
+            userId: "@bot:example.org",
+            password: "secret",
+            groupPolicy: "open",
+          },
+        },
+        messages: {
+          ackReaction: "✅",
+        },
+      } as CoreConfig,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$event-2",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot what do you think?",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /ack failed/,
+  );
+
+  assert.equal(recorded.length, 1);
+  assert.deepEqual(roomHistory.snapshot("default:!room:example.org"), []);
 });
 
 test("auto-downloads room attachments into the agent workspace and advertises relative paths", async () => {
