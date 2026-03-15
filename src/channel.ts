@@ -165,9 +165,11 @@ async function handleNativeEvent(params: {
     });
     return;
   }
-  log?.debug?.(
-    `[matrix:${account.accountId}] queued outbound ${event.messageId} -> ${event.roomId}`,
-  );
+  if (event.type === "outbound") {
+    const messageId = event.messageId.trim() || "<unknown>";
+    const roomId = event.roomId.trim() || "<unknown>";
+    log?.debug?.(`[matrix:${account.accountId}] queued outbound ${messageId} -> ${roomId}`);
+  }
 }
 
 export async function processNativeEvents(params: {
