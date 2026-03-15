@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { matrixRustActions, summarizeReactionsForTool } from "./actions.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
@@ -21,6 +24,11 @@ const originalUploadMedia = MatrixNativeClient.prototype.uploadMedia;
 const originalReadMessages = MatrixNativeClient.prototype.readMessages;
 const originalMessageSummary = MatrixNativeClient.prototype.messageSummary;
 const originalDownloadMedia = MatrixNativeClient.prototype.downloadMedia;
+let saveMediaBufferCalls: Array<{
+  contentType?: string;
+  filename?: string;
+  sizeBytes: number;
+}> = [];
 
 function installReadyClient(params: {
   sendMessage?: (request: Record<string, unknown>) => Record<string, unknown>;
@@ -75,6 +83,7 @@ function installReadyClient(params: {
 }
 
 beforeEach(() => {
+  saveMediaBufferCalls = [];
   setMatrixRustRuntime({
     state: {
       resolveStateDir: () => "/tmp/openclaw-test-state",
@@ -95,11 +104,18 @@ beforeEach(() => {
           _kind?: string,
           _maxBytes?: number,
           filename?: string,
-        ) => ({
-          path: `/tmp/${filename ?? "attachment"}`,
-          contentType: contentType ?? "application/octet-stream",
-          sizeBytes: buffer.length,
-        }),
+        ) => {
+          saveMediaBufferCalls.push({
+            contentType,
+            filename,
+            sizeBytes: buffer.length,
+          });
+          return {
+            path: `/tmp/${filename ?? "attachment"}`,
+            contentType: contentType ?? "application/octet-stream",
+            sizeBytes: buffer.length,
+          };
+        },
       },
     },
   } as any);
@@ -283,7 +299,7 @@ test("read action keeps timeline reads unchanged when no eventId is supplied", a
   });
 });
 
-test("read action can retrieve a single event with saved media metadata", async () => {
+test("read action can include an image block for a single event without host persistence", async () => {
   const messageSummaryCalls: Array<Record<string, unknown>> = [];
   const downloadMediaCalls: Array<Record<string, unknown>> = [];
   installReadyClient({
@@ -314,7 +330,7 @@ test("read action can retrieve a single event with saved media metadata", async 
     params: {
       to: "!room:example.org",
       eventId: "$event",
-      includeMedia: true,
+      includeImage: true,
     },
     cfg: baseConfig,
   });
@@ -329,6 +345,158 @@ test("read action can retrieve a single event with saved media metadata", async 
     {
       roomId: "!room:example.org",
       eventId: "$event",
+    },
+  ]);
+  assert.deepEqual(saveMediaBufferCalls, []);
+  assert.deepEqual(result, {
+    ok: true,
+    roomId: "!room:example.org",
+    eventId: "$event",
+    message: {
+      eventId: "$event",
+      sender: "@alice:example.org",
+      body: "see attached",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    },
+    media: [],
+    content: [
+      {
+        type: "text",
+        text: 'Retrieved image attachment for $event: filename="photo.jpg" type="image/jpeg"',
+      },
+      {
+        type: "image",
+        data: Buffer.from("jpeg-bytes").toString("base64"),
+        mimeType: "image/jpeg",
+        fileName: "photo.jpg",
+      },
+    ],
+  });
+});
+
+test("read action can stage an image into an agent-visible root", async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-read-download-"));
+  const messageSummaryCalls: Array<Record<string, unknown>> = [];
+  const downloadMediaCalls: Array<Record<string, unknown>> = [];
+  installReadyClient({
+    messageSummary: (request) => {
+      messageSummaryCalls.push(request);
+      return {
+        eventId: "$event",
+        sender: "@alice:example.org",
+        body: "see attached",
+        timestamp: "2026-03-14T12:00:00.000Z",
+      };
+    },
+    downloadMedia: (request) => {
+      downloadMediaCalls.push(request);
+      return {
+        roomId: "!room:example.org",
+        eventId: "$event",
+        kind: "image",
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        dataBase64: Buffer.from("jpeg-bytes").toString("base64"),
+      };
+    },
+  });
+
+  const result = (await matrixRustActions.handleAction!({
+    action: "read",
+    params: {
+      to: "!room:example.org",
+      eventId: "$event",
+      downloadImage: true,
+    },
+    cfg: baseConfig,
+    mediaLocalRoots: ["/tmp/openclaw-state/media", tempRoot],
+  })) as Record<string, unknown>;
+
+  assert.deepEqual(messageSummaryCalls, [
+    {
+      roomId: "!room:example.org",
+      eventId: "$event",
+    },
+  ]);
+  assert.deepEqual(downloadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      eventId: "$event",
+    },
+  ]);
+  assert.deepEqual(saveMediaBufferCalls, []);
+
+  const media = result.media as Array<Record<string, unknown>>;
+  assert.equal(media.length, 1);
+  const stagedPath = media[0]?.stagedPath;
+  assert.equal(typeof stagedPath, "string");
+  assert.match(String(stagedPath), new RegExp(`${tempRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*downloads`));
+  assert.equal(await fs.readFile(String(stagedPath), "utf8"), "jpeg-bytes");
+
+  assert.deepEqual(result, {
+    ok: true,
+    roomId: "!room:example.org",
+    eventId: "$event",
+    message: {
+      eventId: "$event",
+      sender: "@alice:example.org",
+      body: "see attached",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    },
+    media: [
+      {
+        eventId: "$event",
+        kind: "image",
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        stagedPath,
+        stagedContentType: "image/jpeg",
+      },
+    ],
+    details: {
+      downloadImage: {
+        eventId: "$event",
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        path: stagedPath,
+      },
+    },
+  });
+});
+
+test("read action keeps legacy includeMedia persistence behavior", async () => {
+  installReadyClient({
+    messageSummary: () => ({
+      eventId: "$event",
+      sender: "@alice:example.org",
+      body: "see attached",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    }),
+    downloadMedia: () => ({
+      roomId: "!room:example.org",
+      eventId: "$event",
+      kind: "image",
+      filename: "photo.jpg",
+      contentType: "image/jpeg",
+      dataBase64: Buffer.from("jpeg-bytes").toString("base64"),
+    }),
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "read",
+    params: {
+      to: "!room:example.org",
+      eventId: "$event",
+      includeMedia: true,
+    },
+    cfg: baseConfig,
+  });
+
+  assert.deepEqual(saveMediaBufferCalls, [
+    {
+      contentType: "image/jpeg",
+      filename: "photo.jpg",
+      sizeBytes: "jpeg-bytes".length,
     },
   ]);
   assert.deepEqual(result, {

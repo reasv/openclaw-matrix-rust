@@ -286,7 +286,9 @@ Notes on `read`:
 
 - `read` with timeline params (`limit`, `before`, `after`) still returns paginated message summaries.
 - `read` with `eventId` returns a single message summary.
-- `read` with `eventId` and `includeMedia: true` also downloads and persists that message's attachment, returning filename, MIME type, and saved local path for intentional follow-up retrieval.
+- `read` with `eventId` and `includeImage: true` returns the attachment as an image content block for direct multimodal inspection.
+- `read` with `eventId` and `downloadImage: true` stages the image into an agent-visible local root and returns that staged path in metadata.
+- `read` with `eventId` and `includeMedia: true` keeps the legacy host-side persistence behavior for compatibility.
 
 ## Architecture
 

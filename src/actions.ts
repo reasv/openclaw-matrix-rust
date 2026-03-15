@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   readNumberParam,
   readStringParam,
@@ -98,9 +101,90 @@ async function ensureStartedClient(account: ResolvedMatrixAccount) {
   return ensureMatrixClientStarted(account);
 }
 
+function isTruthyParam(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes";
+  }
+  return false;
+}
+
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
   const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
   return limitMb * 1024 * 1024;
+}
+
+function isImageDownload(downloaded: {
+  kind?: string;
+  contentType?: string;
+}): boolean {
+  const kind = downloaded.kind?.trim().toLowerCase();
+  if (kind === "image") {
+    return true;
+  }
+  return downloaded.contentType?.trim().toLowerCase().startsWith("image/") ?? false;
+}
+
+function sanitizeMatrixDownloadFilename(filename?: string, fallbackBase = "attachment"): string {
+  const trimmed = filename?.trim();
+  const candidate = trimmed ? path.basename(trimmed) : fallbackBase;
+  const sanitized = candidate
+    .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return sanitized || fallbackBase;
+}
+
+function resolveAgentVisibleDownloadRoot(params: {
+  mediaLocalRoots?: readonly string[];
+  runtime: ReturnType<typeof getMatrixRustRuntime>;
+}): string | undefined {
+  const roots = (params.mediaLocalRoots ?? [])
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  if (roots.length === 0) {
+    return undefined;
+  }
+  const stateDir = params.runtime.state.resolveStateDir();
+  const normalizedStateDir = typeof stateDir === "string" ? path.resolve(stateDir) : "";
+  const prefer = (candidate: string): number => {
+    const resolved = path.resolve(candidate);
+    const underState =
+      normalizedStateDir.length > 0 &&
+      (resolved === normalizedStateDir || resolved.startsWith(`${normalizedStateDir}${path.sep}`));
+    if (!underState) {
+      return 0;
+    }
+    if (resolved.includes(`${path.sep}sandboxes${path.sep}`) || resolved.endsWith(`${path.sep}sandboxes`)) {
+      return 4;
+    }
+    if (resolved.includes(`${path.sep}media${path.sep}`) || resolved.endsWith(`${path.sep}media`)) {
+      return 3;
+    }
+    if (
+      resolved.includes(`${path.sep}workspace${path.sep}`) ||
+      resolved.endsWith(`${path.sep}workspace`)
+    ) {
+      return 1;
+    }
+    return 2;
+  };
+  const sorted = roots
+    .map((root, index) => ({ root, index, score: prefer(root) }))
+    .sort((left, right) => {
+      if (left.score !== right.score) {
+        return left.score - right.score;
+      }
+      return right.index - left.index;
+    });
+  return sorted[0]?.root;
 }
 
 async function persistDownloadedMatrixMedia(params: {
@@ -123,6 +207,59 @@ async function persistDownloadedMatrixMedia(params: {
     path: persisted.path,
     contentType: persisted.contentType ?? params.downloaded.contentType,
   };
+}
+
+async function stageDownloadedMatrixMediaForAgent(params: {
+  downloaded: {
+    dataBase64: string;
+    contentType?: string;
+    filename?: string;
+  };
+  mediaLocalRoots?: readonly string[];
+}): Promise<{ path: string; contentType?: string } | null> {
+  const runtime = getMatrixRustRuntime();
+  const root = resolveAgentVisibleDownloadRoot({
+    mediaLocalRoots: params.mediaLocalRoots,
+    runtime,
+  });
+  if (!root) {
+    return null;
+  }
+  const baseName = sanitizeMatrixDownloadFilename(params.downloaded.filename);
+  const parsed = path.parse(baseName);
+  const uniqueName = `${parsed.name || "attachment"}---${crypto.randomUUID()}${parsed.ext}`;
+  const dir = path.join(root, "downloads", "matrix-read");
+  const outputPath = path.join(dir, uniqueName);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(outputPath, Buffer.from(params.downloaded.dataBase64, "base64"));
+  return {
+    path: outputPath,
+    contentType: params.downloaded.contentType,
+  };
+}
+
+function buildReadImageContent(params: {
+  eventId: string;
+  downloaded: {
+    filename?: string;
+    contentType?: string;
+    dataBase64: string;
+  };
+}): Array<Record<string, unknown>> {
+  const filename = params.downloaded.filename?.trim() || "attachment";
+  const contentType = params.downloaded.contentType?.trim() || "image/jpeg";
+  return [
+    {
+      type: "text",
+      text: `Retrieved image attachment for ${params.eventId}: filename="${filename}" type="${contentType}"`,
+    },
+    {
+      type: "image",
+      data: params.downloaded.dataBase64,
+      mimeType: contentType,
+      fileName: filename,
+    },
+  ];
 }
 
 export function summarizeReactionsForTool(
@@ -251,7 +388,10 @@ async function handleNonSendAction(
     const client = await ensureStartedClient(account);
     const roomId = resolveRoomId(ctx.params);
     const eventId = readStringParam(ctx.params, "eventId") ?? readStringParam(ctx.params, "messageId");
-    const includeMedia = Boolean(ctx.params.includeMedia || ctx.params.downloadMedia);
+    const includeImage = isTruthyParam(ctx.params.includeImage);
+    const downloadImage = isTruthyParam(ctx.params.downloadImage);
+    const includeMedia = isTruthyParam(ctx.params.includeMedia);
+    const downloadMedia = isTruthyParam(ctx.params.downloadMedia);
     if (eventId) {
       const message = client.messageSummary({
         roomId,
@@ -267,26 +407,70 @@ async function handleNonSendAction(
         };
       }
       let media: Array<Record<string, unknown>> = [];
+      let content: Array<Record<string, unknown>> | undefined;
+      let details: Record<string, unknown> | undefined;
+      const shouldDownload = includeImage || downloadImage || includeMedia || downloadMedia;
       if (includeMedia) {
+        // handled below
+      }
+      if (shouldDownload) {
         try {
           const downloaded = client.downloadMedia({
             roomId,
             eventId,
           });
-          const persisted = await persistDownloadedMatrixMedia({
-            account,
-            downloaded,
-          });
-          media = [
-            {
+          const isImage = isImageDownload(downloaded);
+          if (includeImage && isImage) {
+            content = buildReadImageContent({
+              eventId,
+              downloaded,
+            });
+          }
+          if (downloadImage && isImage) {
+            const staged = await stageDownloadedMatrixMediaForAgent({
+              downloaded,
+              mediaLocalRoots: ctx.mediaLocalRoots,
+            });
+            media.push({
+              eventId,
+              kind: downloaded.kind,
+              filename: downloaded.filename ?? null,
+              contentType: downloaded.contentType ?? null,
+              stagedPath: staged?.path ?? null,
+              stagedContentType: staged?.contentType ?? downloaded.contentType ?? null,
+            });
+            details = {
+              ...(details ?? {}),
+              downloadImage:
+                staged != null
+                  ? {
+                      eventId,
+                      filename: downloaded.filename ?? null,
+                      contentType: downloaded.contentType ?? null,
+                      path: staged.path,
+                    }
+                  : {
+                      eventId,
+                      filename: downloaded.filename ?? null,
+                      contentType: downloaded.contentType ?? null,
+                      error: "No agent-visible media root available for downloadImage.",
+                    },
+            };
+          }
+          if (includeMedia || downloadMedia) {
+            const persisted = await persistDownloadedMatrixMedia({
+              account,
+              downloaded,
+            });
+            media.push({
               eventId,
               kind: downloaded.kind,
               filename: downloaded.filename ?? null,
               contentType: downloaded.contentType ?? null,
               savedPath: persisted.path,
               savedContentType: persisted.contentType ?? null,
-            },
-          ];
+            });
+          }
         } catch (err) {
           media = [
             {
@@ -294,15 +478,26 @@ async function handleNonSendAction(
               error: String(err),
             },
           ];
+          details = {
+            ...(details ?? {}),
+            error: String(err),
+          };
         }
       }
-      return {
+      const result: Record<string, unknown> = {
         ok: true,
         roomId,
         eventId,
         message,
         media,
       };
+      if (content && content.length > 0) {
+        result.content = content;
+      }
+      if (details && Object.keys(details).length > 0) {
+        result.details = details;
+      }
+      return result;
     }
     return {
       ok: true,
