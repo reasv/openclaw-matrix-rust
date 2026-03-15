@@ -35,6 +35,28 @@ declare module "openclaw/plugin-sdk/matrix" {
     };
   };
 
+  export type PersistentDedupeOptions = {
+    ttlMs: number;
+    memoryMaxSize: number;
+    fileMaxEntries: number;
+    resolveFilePath: (namespace: string) => string;
+    lockOptions?: Record<string, unknown>;
+    onDiskError?: (error: unknown) => void;
+  };
+
+  export type PersistentDedupeCheckOptions = {
+    namespace?: string;
+    now?: number;
+    onDiskError?: (error: unknown) => void;
+  };
+
+  export type PersistentDedupe = {
+    checkAndRecord: (key: string, options?: PersistentDedupeCheckOptions) => Promise<boolean>;
+    warmup: (namespace?: string, onError?: (error: unknown) => void) => Promise<number>;
+    clearMemory: () => void;
+    memorySize: () => number;
+  };
+
   export type OpenClawPluginApi = {
     runtime: PluginRuntime;
     logger: {
@@ -215,6 +237,7 @@ declare module "openclaw/plugin-sdk/matrix" {
 
   export function emptyPluginConfigSchema(): Record<string, unknown>;
   export function buildChannelConfigSchema(schema: unknown): unknown;
+  export function createPersistentDedupe(options: PersistentDedupeOptions): PersistentDedupe;
   export function collectStatusIssuesFromLastError(
     channel: string,
     accounts: Record<string, unknown>[],
