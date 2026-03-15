@@ -323,6 +323,65 @@ function resolveBaseRouteSession(params: {
   };
 }
 
+export type ResolvedMatrixInboundRoute = {
+  agentId: string;
+  accountId?: string;
+  mainSessionKey: string;
+  parentSessionKey: string;
+  sessionKey: string;
+  lastRoutePolicy: "main" | "session";
+  isDirectMessage: boolean;
+  roomConfigInfo: ReturnType<typeof resolveMatrixRoomConfig>;
+};
+
+export function resolveMatrixInboundRoute(params: {
+  cfg: CoreConfig;
+  account: ResolvedMatrixAccount;
+  event: MatrixInboundEvent;
+  runtime?: ReturnType<typeof getMatrixRustRuntime>;
+}): ResolvedMatrixInboundRoute {
+  const runtime = (params.runtime ?? getMatrixRustRuntime()) as any;
+  const roomConfigInfo = resolveMatrixRoomConfig({
+    rooms: params.account.config.rooms ?? params.account.config.groups,
+    roomId: params.event.roomId,
+    aliases: params.event.roomAlias ? [params.event.roomAlias] : [],
+  });
+  let isDirectMessage = params.event.chatType === "direct";
+  if (shouldOverrideDmToGroup({ isDirectMessage, roomConfigInfo })) {
+    isDirectMessage = false;
+  }
+
+  const baseRoute = runtime.channel.routing.resolveAgentRoute({
+    cfg: params.cfg,
+    channel: "matrix",
+    accountId: params.account.accountId,
+    peer: {
+      kind: isDirectMessage ? "direct" : "channel",
+      id: isDirectMessage ? params.event.senderId : params.event.roomId,
+    },
+    parentPeer: isDirectMessage ? { kind: "channel", id: params.event.roomId } : undefined,
+  });
+  const routeSession = resolveBaseRouteSession({
+    runtime,
+    baseRoute,
+    isDirectMessage,
+    roomId: params.event.roomId,
+    accountId: params.account.accountId,
+  });
+  return {
+    agentId: baseRoute.agentId,
+    accountId: baseRoute.accountId,
+    mainSessionKey: baseRoute.mainSessionKey,
+    parentSessionKey: routeSession.sessionKey,
+    sessionKey: params.event.threadRootId
+      ? `${routeSession.sessionKey}:thread:${params.event.threadRootId}`
+      : routeSession.sessionKey,
+    lastRoutePolicy: routeSession.lastRoutePolicy,
+    isDirectMessage,
+    roomConfigInfo,
+  };
+}
+
 function resolveRoomConfig(
   account: ResolvedMatrixAccount,
   event: MatrixInboundEvent,
@@ -1094,15 +1153,14 @@ export async function handleMatrixInboundEvent(params: {
   const dmPolicyRaw = account.config.dm?.policy ?? "pairing";
   const dmPolicy =
     allowlistOnly && dmPolicyRaw !== "disabled" ? "allowlist" : dmPolicyRaw;
-  const roomConfigInfo = resolveMatrixRoomConfig({
-    rooms: account.config.rooms ?? account.config.groups,
-    roomId: event.roomId,
-    aliases: event.roomAlias ? [event.roomAlias] : [],
+  const route = resolveMatrixInboundRoute({
+    cfg,
+    account,
+    event,
+    runtime,
   });
-  let isDirectMessage = event.chatType === "direct";
-  if (shouldOverrideDmToGroup({ isDirectMessage, roomConfigInfo })) {
-    isDirectMessage = false;
-  }
+  const { roomConfigInfo } = route;
+  const isDirectMessage = route.isDirectMessage;
   const isRoom = !isDirectMessage;
   const roomConfig = isRoom ? roomConfigInfo.config : undefined;
 
@@ -1117,31 +1175,6 @@ export async function handleMatrixInboundEvent(params: {
       return;
     }
   }
-
-  const baseRoute = runtime.channel.routing.resolveAgentRoute({
-    cfg,
-    channel: "matrix",
-    accountId: account.accountId,
-    peer: {
-      kind: isDirectMessage ? "direct" : "channel",
-      id: isDirectMessage ? event.senderId : event.roomId,
-    },
-    parentPeer: isDirectMessage ? { kind: "channel", id: event.roomId } : undefined,
-  });
-  const routeSession = resolveBaseRouteSession({
-    runtime,
-    baseRoute,
-    isDirectMessage,
-    roomId: event.roomId,
-    accountId: account.accountId,
-  });
-  const route = {
-    ...baseRoute,
-    lastRoutePolicy: routeSession.lastRoutePolicy,
-    sessionKey: event.threadRootId
-      ? `${routeSession.sessionKey}:thread:${event.threadRootId}`
-      : routeSession.sessionKey,
-  };
 
   const pairing = createScopedPairingAccess({
     core: runtime,
@@ -1402,7 +1435,7 @@ export async function handleMatrixInboundEvent(params: {
     threadRootId: event.threadRootId,
     threadSessionExists: previousTimestamp !== undefined,
     conversationLabel,
-    parentSessionKey: routeSession.sessionKey,
+    parentSessionKey: route.parentSessionKey,
     envelopeOptions,
     formatAgentEnvelope: runtime.channel.reply.formatAgentEnvelope,
     log,

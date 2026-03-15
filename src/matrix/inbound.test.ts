@@ -16,6 +16,7 @@ import {
   extractMatrixCustomEmojiUsageFromFormattedBody,
   filterMatrixMediaForContext,
   handleMatrixInboundEvent,
+  resolveMatrixInboundRoute,
   resolveMatrixReplyContext,
   resolveMatrixThreadContext,
   resolveGroupPolicy,
@@ -142,6 +143,107 @@ function createInboundEvent(overrides: Partial<MatrixInboundEvent> = {}): Matrix
     ...overrides,
   };
 }
+
+test("resolveMatrixInboundRoute builds a room-scoped parent session for parent-bound DMs", () => {
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+  } as ResolvedMatrixAccount["config"]);
+  const event = createInboundEvent({
+    roomId: "!dm:example.org",
+    chatType: "direct",
+  });
+
+  const route = resolveMatrixInboundRoute({
+    cfg: {} as CoreConfig,
+    account,
+    event,
+    runtime: {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "main",
+            accountId: "default",
+            sessionKey: "agent:main:matrix:direct:@alice:example.org",
+            mainSessionKey: "agent:main:main",
+            matchedBy: "binding.peer.parent",
+          }),
+          buildAgentSessionKey: ({ peer }: { peer: { id: string } }) =>
+            `agent:main:matrix:channel:${peer.id}`,
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(route.isDirectMessage, true);
+  assert.equal(route.parentSessionKey, "agent:main:matrix:channel:!dm:example.org");
+  assert.equal(route.sessionKey, "agent:main:matrix:channel:!dm:example.org");
+  assert.equal(route.lastRoutePolicy, "session");
+});
+
+test("resolveMatrixInboundRoute appends thread roots without changing the parent session", () => {
+  const route = resolveMatrixInboundRoute({
+    cfg: {} as CoreConfig,
+    account: createResolvedAccount(),
+    event: createInboundEvent({
+      threadRootId: "$thread-root",
+    }),
+    runtime: createRuntimeForInboundTests({
+      onRecordInboundSession: async () => undefined,
+    }),
+  });
+
+  assert.equal(route.parentSessionKey, "agent:main:matrix:channel:!room:example.org");
+  assert.equal(
+    route.sessionKey,
+    "agent:main:matrix:channel:!room:example.org:thread:$thread-root",
+  );
+});
+
+test("resolveMatrixInboundRoute treats direct-matched configured rooms as channel sessions", () => {
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    rooms: {
+      "!dm:example.org": {
+        autoReply: true,
+      },
+    },
+  } as ResolvedMatrixAccount["config"]);
+  const event = createInboundEvent({
+    roomId: "!dm:example.org",
+    chatType: "direct",
+  });
+  const resolveCalls: Array<Record<string, any>> = [];
+
+  const route = resolveMatrixInboundRoute({
+    cfg: {} as CoreConfig,
+    account,
+    event,
+    runtime: {
+      channel: {
+        routing: {
+          resolveAgentRoute: (payload: Record<string, unknown>) => {
+            resolveCalls.push(payload as Record<string, any>);
+            return {
+              agentId: "main",
+              accountId: "default",
+              sessionKey: "agent:main:matrix:channel:!dm:example.org",
+              mainSessionKey: "agent:main:main",
+            };
+          },
+          buildAgentSessionKey: () => "agent:main:matrix:channel:!dm:example.org",
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(route.isDirectMessage, false);
+  assert.equal(resolveCalls[0]?.peer?.kind, "channel");
+  assert.equal(resolveCalls[0]?.peer?.id, "!dm:example.org");
+});
 
 test("extracts custom emoji regardless of attribute order", () => {
   const entries = extractMatrixCustomEmojiUsageFromFormattedBody(
