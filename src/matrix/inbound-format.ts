@@ -13,6 +13,7 @@ export type MatrixAttachmentTextEntry = {
   filename?: string;
   contentType?: string;
   kind?: string;
+  savedTo?: string;
 };
 
 export function resolveMatrixSenderUsername(senderId: string): string | undefined {
@@ -92,8 +93,11 @@ export function buildMatrixAttachmentTextBlocks(params: {
   const itemLabel = params.itemLabel?.trim() || "Attachment";
   const lines = [`[${heading}: ${attachments.length}]`];
   for (const entry of attachments) {
+    const savedTo = entry.savedTo?.trim();
     lines.push(
-      `[${itemLabel} ${entry.index + 1}] filename="${resolveMatrixAttachmentFilename(entry)}" type="${resolveMatrixAttachmentType(entry)}"`,
+      `[${itemLabel} ${entry.index + 1}] filename="${resolveMatrixAttachmentFilename(entry)}" type="${resolveMatrixAttachmentType(entry)}"${
+        savedTo ? ` saved to="${quoteMatrixAttachmentValue(savedTo)}"` : ""
+      }`,
     );
   }
   return lines;

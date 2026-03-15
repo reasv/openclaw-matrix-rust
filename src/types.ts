@@ -49,6 +49,7 @@ export type MatrixChannelAccountConfig = {
   textChunkLimit?: number;
   roomHistoryMaxEntries?: number;
   mediaMaxMb?: number;
+  autoDownloadAttachmentMaxBytes?: number;
   xPreviewViaFxTwitter?: boolean;
   imageHandlingMode?: MatrixImageHandlingMode;
   otherMediaPaths?: boolean;

@@ -24,10 +24,12 @@ test("accepts media handoff settings", () => {
     homeserver: "https://matrix.example",
     userId: "@bot:example.org",
     password: "secret",
+    autoDownloadAttachmentMaxBytes: 1048576,
     imageHandlingMode: "multimodal-only",
     otherMediaPaths: false,
   });
 
+  assert.equal(result.autoDownloadAttachmentMaxBytes, 1048576);
   assert.equal(result.imageHandlingMode, "multimodal-only");
   assert.equal(result.otherMediaPaths, false);
 });

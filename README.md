@@ -144,6 +144,7 @@ Example:
       "deviceName": "OpenClaw Gateway",
       "encryption": true,
       "threadReplies": "inbound",
+      "autoDownloadAttachmentMaxBytes": 0,
       "imageHandlingMode": "dual",
       "otherMediaPaths": true
     }
@@ -170,6 +171,7 @@ Useful optional settings include:
 - `replyToMode`
 - `threadReplies`
 - `xPreviewViaFxTwitter`
+- `autoDownloadAttachmentMaxBytes`
 - `imageHandlingMode`
 - `otherMediaPaths`
 
@@ -244,12 +246,17 @@ This section lists the behavior this connector actually implements today.
 - Media upload and download are implemented in Rust, with handoff to OpenClaw on the TS side.
 - Multiple Matrix media types are surfaced into the OpenClaw runtime.
 - Every inbound message now includes explicit attachment manifest text with filename and MIME type, including buffered history entries.
+- Room attachments can be auto-downloaded into the agent workspace under `./msg-attach/` when `autoDownloadAttachmentMaxBytes` is enabled.
 - Current-message and direct-parent reply images can be passed to multimodal agent runs as raw image blocks.
 - Image handoff is configurable with `imageHandlingMode`:
   - `dual`: raw image blocks plus normal `MediaPaths`
   - `multimodal-only`: raw image blocks without image `MediaPaths`
   - `analysis-only`: image `MediaPaths` only, no raw image blocks
 - Non-image attachment propagation into `MediaPaths` is separately controlled by `otherMediaPaths`.
+- Auto-download into `./msg-attach/` is controlled by `autoDownloadAttachmentMaxBytes`:
+  - `0`: disabled
+  - `-1`: unlimited
+  - positive value: maximum attachment size in bytes
 
 ### Custom emoji and reactions
 
@@ -286,9 +293,7 @@ Notes on `read`:
 
 - `read` with timeline params (`limit`, `before`, `after`) still returns paginated message summaries.
 - `read` with `eventId` returns a single message summary.
-- `read` with `eventId` and `includeImage: true` returns the attachment as an image content block for direct multimodal inspection.
-- `read` with `eventId` and `downloadImage: true` stages the image into an agent-visible local root and returns that staged path in metadata.
-- `read` with `eventId` and `includeMedia: true` keeps the legacy host-side persistence behavior for compatibility.
+- Attachment retrieval is now primarily handled on inbound by the workspace auto-download path instead of extra `read` flags.
 
 ## Architecture
 

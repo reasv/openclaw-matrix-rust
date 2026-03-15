@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { MatrixNativeClient } from "./adapter/native-client.js";
 import { getMatrixRustRuntime } from "../runtime.js";
 import {
@@ -61,9 +64,170 @@ type SavedMatrixMedia = {
   promptImage?: PromptImageContent;
 };
 
+type DownloadedMatrixAttachment = {
+  dataBase64: string;
+  contentType?: string;
+  filename?: string;
+  kind?: string;
+  savedTo?: string;
+};
+
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
   const limitMb = Math.max(1, account.config.mediaMaxMb ?? 20);
   return limitMb * 1024 * 1024;
+}
+
+function resolveMatrixAttachmentAutoDownloadMaxBytes(
+  account: ResolvedMatrixAccount,
+): number | null {
+  const raw = account.config.autoDownloadAttachmentMaxBytes;
+  if (raw === undefined || raw === null || raw === 0) {
+    return null;
+  }
+  if (raw === -1) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (!Number.isFinite(raw) || raw < 0) {
+    return null;
+  }
+  return Math.floor(raw);
+}
+
+function expandUserPath(input: string): string {
+  if (!input.startsWith("~")) {
+    return path.resolve(input);
+  }
+  const home = process.env.HOME?.trim();
+  if (!home) {
+    return path.resolve(input);
+  }
+  if (input === "~") {
+    return home;
+  }
+  if (input.startsWith("~/")) {
+    return path.join(home, input.slice(2));
+  }
+  return path.resolve(input);
+}
+
+function resolveMatrixAgentWorkspaceDir(params: {
+  cfg: CoreConfig;
+  agentId: string;
+  runtime: ReturnType<typeof getMatrixRustRuntime>;
+}): string {
+  const cfgAny = params.cfg as any;
+  const list = Array.isArray(cfgAny?.agents?.list) ? cfgAny.agents.list : [];
+  const normalizedAgentId = params.agentId.trim().toLowerCase();
+  const match = list.find(
+    (entry: unknown) =>
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as { id?: unknown }).id === "string" &&
+      ((entry as { id: string }).id.trim().toLowerCase() || "main") === normalizedAgentId,
+  ) as { workspace?: unknown } | undefined;
+  const explicitWorkspace =
+    typeof match?.workspace === "string"
+      ? match.workspace
+      : typeof cfgAny?.agents?.defaults?.workspace === "string"
+        ? cfgAny.agents.defaults.workspace
+        : undefined;
+  if (explicitWorkspace?.trim()) {
+    return expandUserPath(explicitWorkspace.trim());
+  }
+  return path.join(params.runtime.state.resolveStateDir(), "workspace");
+}
+
+function encodeBase32Upper(input: Buffer): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let output = "";
+  let bits = 0;
+  let value = 0;
+  for (const byte of input) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    output += alphabet[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+function sanitizeMatrixAttachmentExtension(params: {
+  filename?: string;
+  contentType?: string;
+}): string {
+  const ext = path.extname(params.filename?.trim() ?? "").toLowerCase();
+  if (ext && /^[.][a-z0-9]{1,10}$/i.test(ext)) {
+    return ext;
+  }
+  const contentType = params.contentType?.trim().toLowerCase() ?? "";
+  if (contentType === "image/jpeg") {
+    return ".jpg";
+  }
+  if (contentType === "image/png") {
+    return ".png";
+  }
+  if (contentType === "image/gif") {
+    return ".gif";
+  }
+  if (contentType === "image/webp") {
+    return ".webp";
+  }
+  if (contentType === "application/pdf") {
+    return ".pdf";
+  }
+  if (contentType.startsWith("audio/ogg")) {
+    return ".ogg";
+  }
+  if (contentType.startsWith("audio/mpeg")) {
+    return ".mp3";
+  }
+  if (contentType.startsWith("video/mp4")) {
+    return ".mp4";
+  }
+  return "";
+}
+
+async function maybeAutoDownloadMatrixAttachmentToWorkspace(params: {
+  cfg: CoreConfig;
+  account: ResolvedMatrixAccount;
+  agentId: string;
+  isRoom: boolean;
+  dataBase64: string;
+  filename?: string;
+  contentType?: string;
+}): Promise<string | undefined> {
+  if (!params.isRoom) {
+    return undefined;
+  }
+  const maxBytes = resolveMatrixAttachmentAutoDownloadMaxBytes(params.account);
+  if (maxBytes == null) {
+    return undefined;
+  }
+  const buffer = Buffer.from(params.dataBase64, "base64");
+  if (!Number.isFinite(maxBytes) ? false : buffer.byteLength > maxBytes) {
+    return undefined;
+  }
+  const runtime = getMatrixRustRuntime();
+  const workspaceDir = resolveMatrixAgentWorkspaceDir({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    runtime,
+  });
+  const outputDir = path.join(workspaceDir, "msg-attach");
+  const hashPrefix = encodeBase32Upper(crypto.createHash("sha256").update(buffer).digest()).slice(0, 10);
+  const fileName = `${hashPrefix}${sanitizeMatrixAttachmentExtension({
+    filename: params.filename,
+    contentType: params.contentType,
+  })}`;
+  const outputPath = path.join(outputDir, fileName);
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(outputPath, buffer);
+  return `./msg-attach/${fileName}`;
 }
 
 function resolveMatrixImageHandlingMode(
@@ -349,7 +513,10 @@ function consumeInboundHistory(params: {
 }
 
 export async function resolveMatrixReplyContext(params: {
+  cfg: CoreConfig;
   account: ResolvedMatrixAccount;
+  agentId: string;
+  isRoom: boolean;
   client: MatrixNativeClient;
   roomId: string;
   replyToId?: string;
@@ -398,6 +565,15 @@ export async function resolveMatrixReplyContext(params: {
       roomId: params.roomId,
       eventId: params.replySummary.eventId,
     });
+    const savedTo = await maybeAutoDownloadMatrixAttachmentToWorkspace({
+      cfg: params.cfg,
+      account: params.account,
+      agentId: params.agentId,
+      isRoom: params.isRoom,
+      dataBase64: downloaded.dataBase64,
+      filename: downloaded.filename,
+      contentType: downloaded.contentType,
+    });
     replyAttachmentTextBlocks = buildMatrixAttachmentTextBlocks({
       attachments: [
         {
@@ -405,6 +581,7 @@ export async function resolveMatrixReplyContext(params: {
           filename: downloaded.filename,
           contentType: downloaded.contentType,
           kind: downloaded.kind,
+          savedTo,
         },
       ],
       heading: "Reply attachments",
@@ -681,6 +858,7 @@ async function saveInboundMedia(params: {
   account: ResolvedMatrixAccount;
   client: MatrixNativeClient;
   event: MatrixInboundEvent;
+  prefetched?: DownloadedMatrixAttachment[];
 }): Promise<SavedMatrixMedia[]> {
   const { account, client, event } = params;
   if (event.media.length === 0) {
@@ -691,11 +869,13 @@ async function saveInboundMedia(params: {
   const maxBytes = resolveMediaMaxBytes(account);
   const saved: SavedMatrixMedia[] = [];
 
-  for (const item of event.media) {
-    const downloaded = client.downloadMedia({
-      roomId: event.roomId,
-      eventId: event.eventId,
-    });
+  for (const [index, item] of event.media.entries()) {
+    const downloaded =
+      params.prefetched?.[index] ??
+      client.downloadMedia({
+        roomId: event.roomId,
+        eventId: event.eventId,
+      });
     const persisted = await runtime.channel.media.saveMediaBuffer(
       Buffer.from(downloaded.dataBase64, "base64"),
       downloaded.contentType ?? item.contentType,
@@ -717,6 +897,82 @@ async function saveInboundMedia(params: {
   }
 
   return saved;
+}
+
+async function resolveMatrixEventAttachmentContext(params: {
+  cfg: CoreConfig;
+  account: ResolvedMatrixAccount;
+  agentId: string;
+  client: MatrixNativeClient;
+  event: MatrixInboundEvent;
+  isRoom: boolean;
+  log?: { debug?: (message: string) => void };
+}): Promise<{
+  attachmentEntries: Array<{
+    index: number;
+    filename?: string;
+    contentType?: string;
+    kind?: string;
+    savedTo?: string;
+  }>;
+  prefetched: DownloadedMatrixAttachment[];
+}> {
+  const shouldAttemptAutoDownload =
+    params.isRoom && resolveMatrixAttachmentAutoDownloadMaxBytes(params.account) != null;
+  const attachmentEntries: Array<{
+    index: number;
+    filename?: string;
+    contentType?: string;
+    kind?: string;
+    savedTo?: string;
+  }> = [];
+  const prefetched: DownloadedMatrixAttachment[] = [];
+  for (const [index, item] of params.event.media.entries()) {
+    let filename = item.filename;
+    let contentType = item.contentType;
+    let savedTo: string | undefined;
+    if (shouldAttemptAutoDownload) {
+      try {
+        const downloaded = params.client.downloadMedia({
+          roomId: params.event.roomId,
+          eventId: params.event.eventId,
+        });
+        filename = downloaded.filename ?? filename;
+        contentType = downloaded.contentType ?? contentType;
+        savedTo = await maybeAutoDownloadMatrixAttachmentToWorkspace({
+          cfg: params.cfg,
+          account: params.account,
+          agentId: params.agentId,
+          isRoom: params.isRoom,
+          dataBase64: downloaded.dataBase64,
+          filename,
+          contentType,
+        });
+        prefetched.push({
+          dataBase64: downloaded.dataBase64,
+          filename,
+          contentType,
+          kind: item.kind,
+          savedTo,
+        });
+      } catch (err) {
+        params.log?.debug?.(
+          `[matrix:${params.account.accountId}] attachment auto-download skipped for ${params.event.eventId}: ${String(err)}`,
+        );
+      }
+    }
+    attachmentEntries.push({
+      index,
+      filename,
+      contentType,
+      kind: item.kind,
+      savedTo,
+    });
+  }
+  return {
+    attachmentEntries,
+    prefetched,
+  };
 }
 
 async function savePreviewMedia(params: {
@@ -896,6 +1152,15 @@ export async function handleMatrixInboundEvent(params: {
     senderId: event.senderId,
     senderUsername: resolveMatrixSenderUsername(event.senderId),
   });
+  const attachmentContext = await resolveMatrixEventAttachmentContext({
+    cfg,
+    account,
+    agentId: route.agentId,
+    client,
+    event,
+    isRoom,
+    log,
+  });
   const baseBodyText = resolveMatrixReadableBody({
     body: event.body,
     formattedBody: event.formattedBody,
@@ -915,7 +1180,10 @@ export async function handleMatrixInboundEvent(params: {
     }
   }
   const replyContext = await resolveMatrixReplyContext({
+    cfg,
     account,
+    agentId: route.agentId,
+    isRoom,
     client,
     roomId: event.roomId,
     replyToId: event.replyToId,
@@ -925,7 +1193,7 @@ export async function handleMatrixInboundEvent(params: {
   const replyToBody = replyContext.replyToBody;
   const replyToSender = replyContext.replyToSender;
   const attachmentTextBlocks = buildMatrixAttachmentTextBlocks({
-    attachments: event.media,
+    attachments: attachmentContext.attachmentEntries,
   });
   let previewTextBlocks: string[] = [];
   let previewMedia: SavedMatrixMedia[] = [];
@@ -955,11 +1223,6 @@ export async function handleMatrixInboundEvent(params: {
     replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
     replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
     previewTextBlocks,
-    eventContextLine: buildMatrixEventContextLine({
-      roomId: event.roomId,
-      eventId: event.eventId,
-      threadRootId: event.threadRootId,
-    }),
   });
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
     await resolveMatrixAccessState({
@@ -1098,7 +1361,12 @@ export async function handleMatrixInboundEvent(params: {
       : [];
 
   const collectedMedia: SavedMatrixMedia[] = [
-    ...(await saveInboundMedia({ account, client, event })),
+    ...(await saveInboundMedia({
+      account,
+      client,
+      event,
+      prefetched: attachmentContext.prefetched,
+    })),
     ...replyContext.replyAttachmentMedia,
     ...replyContext.replyPreviewMedia,
     ...previewMedia,

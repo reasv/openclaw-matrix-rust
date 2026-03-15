@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -52,6 +55,9 @@ function createRuntimeForInboundTests(params: {
   onRecordInboundSession: (payload: Record<string, unknown>) => Promise<never>;
 }) {
   return {
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-matrix-rust-state",
+    },
     channel: {
       routing: {
         resolveAgentRoute: () => ({
@@ -370,6 +376,26 @@ test("builds stable attachment manifest text with fallback values", () => {
   );
 });
 
+test("includes saved workspace paths in attachment manifest text when present", () => {
+  assert.deepEqual(
+    buildMatrixAttachmentTextBlocks({
+      attachments: [
+        {
+          index: 0,
+          filename: "photo.jpg",
+          contentType: "image/jpeg",
+          kind: "image",
+          savedTo: "./msg-attach/ABCDE12345.jpg",
+        },
+      ],
+    }),
+    [
+      "[Attachments: 1]",
+      '[Attachment 1] filename="photo.jpg" type="image/jpeg" saved to="./msg-attach/ABCDE12345.jpg"',
+    ],
+  );
+});
+
 test("resolves reply context with display names and one-hop previews", async () => {
   const cfg: CoreConfig = {
     channels: {
@@ -392,7 +418,10 @@ test("resolves reply context with display names and one-hop previews", async () 
   };
 
   const replyContext = await resolveMatrixReplyContext({
+    cfg,
     account,
+    agentId: "main",
+    isRoom: true,
     client: {
       memberInfo: ({ userId }: { userId: string }) => ({
         roomId: "!room:example.org",
@@ -445,10 +474,34 @@ test("resolves reply attachment manifests and reply image media", async () => {
     homeserver: "https://matrix.example.org",
     userId: "@bot:example.org",
     password: "secret",
+    autoDownloadAttachmentMaxBytes: -1,
   } as ResolvedMatrixAccount["config"]);
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-reply-attach-"));
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-matrix-rust-state",
+    },
+  } as any);
 
   const replyContext = await resolveMatrixReplyContext({
+    cfg: {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+        },
+      },
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          password: "secret",
+          autoDownloadAttachmentMaxBytes: -1,
+        },
+      },
+    } as CoreConfig,
     account,
+    agentId: "main",
+    isRoom: true,
     client: {
       downloadMedia: ({ eventId }: { eventId: string }) => {
         assert.equal(eventId, "$parent");
@@ -498,10 +551,11 @@ test("resolves reply attachment manifests and reply image media", async () => {
       })),
   });
 
-  assert.deepEqual(replyContext.replyAttachmentTextBlocks, [
-    "[Reply attachments: 1]",
-    '[Reply attachment 1] filename="reply-photo.png" type="image/png"',
-  ]);
+  assert.equal(replyContext.replyAttachmentTextBlocks[0], "[Reply attachments: 1]");
+  assert.match(
+    replyContext.replyAttachmentTextBlocks[1] ?? "",
+    /^\[Reply attachment 1\] filename="reply-photo\.png" type="image\/png" saved to="\.\/msg-attach\/[A-Z2-7]{10}\.png"$/,
+  );
   assert.deepEqual(replyContext.replyAttachmentMedia, [
     {
       path: "/tmp/reply-0.png",
@@ -515,6 +569,12 @@ test("resolves reply attachment manifests and reply image media", async () => {
       },
     },
   ]);
+  const replySavedName = (replyContext.replyAttachmentTextBlocks[1] ?? "").match(
+    /saved to="\.\/msg-attach\/([^"]+)"/,
+  )?.[1];
+  assert.ok(replySavedName);
+  const savedPath = path.join(workspaceDir, "msg-attach", replySavedName);
+  assert.equal(await fs.readFile(savedPath, "utf8"), "reply-image");
 });
 
 test("filters MediaPaths separately from prompt image delivery", () => {
@@ -864,11 +924,116 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
         "just chatting",
         "[Attachments: 1]",
         '[Attachment 1] filename="buffered.png" type="image/png"',
-        '[Matrix event] room="!room:example.org" event="$event-1"',
       ].join("\n"),
       timestamp: Date.parse(firstTimestamp),
     },
   ]);
+});
+
+test("auto-downloads room attachments into the agent workspace and advertises relative paths", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-buffered-attach-"));
+  const bufferedTimestamp = "2026-03-14T12:00:00.000Z";
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    agents: {
+      defaults: {
+        workspace: workspaceDir,
+      },
+    },
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        autoDownloadAttachmentMaxBytes: -1,
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount(cfg.channels?.matrix as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    downloadMedia: ({ eventId }: { eventId: string }) => {
+      assert.equal(eventId, "$buffered-image");
+      return {
+        roomId: "!room:example.org",
+        eventId,
+        kind: "image",
+        filename: "buffered.png",
+        contentType: "image/png",
+        dataBase64: Buffer.from("buffered-image").toString("base64"),
+      };
+    },
+  } as any;
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$buffered-image",
+      body: "buffered image",
+      timestamp: bufferedTimestamp,
+      media: [
+        {
+          index: 0,
+          kind: "image",
+          filename: "buffered.png",
+          contentType: "image/png",
+        },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$mentioned",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot take a look",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  const inboundHistory = ctx.InboundHistory as Array<{
+    sender: string;
+    body: string;
+    timestamp?: number;
+  }>;
+  assert.equal(inboundHistory.length, 1);
+  assert.equal(inboundHistory[0]?.sender, "Alice (alice)");
+  assert.equal(inboundHistory[0]?.timestamp, Date.parse(bufferedTimestamp));
+  assert.match(
+    inboundHistory[0]?.body ?? "",
+    /^buffered image\n\[Attachments: 1\]\n\[Attachment 1\] filename="buffered\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)"$/,
+  );
+  const savedName = (inboundHistory[0]?.body ?? "").match(
+    /saved to="\.\/msg-attach\/([^"]+)"/,
+  )?.[1];
+  assert.ok(savedName);
+  const savedPath = path.join(workspaceDir, "msg-attach", savedName);
+  assert.equal(await fs.readFile(savedPath, "utf8"), "buffered-image");
 });
 
 test("keeps thread history separate from room-main history", async () => {
@@ -1059,7 +1224,7 @@ test("does not leak pending room history across accounts sharing the same room i
   assert.deepEqual(workCtx.InboundHistory, [
     {
       sender: "Alice (alice)",
-      body: 'from work account\n[Matrix event] room="!room:example.org" event="$work-buffered"',
+      body: "from work account",
       timestamp: Date.parse(workTimestamp),
     },
   ]);
