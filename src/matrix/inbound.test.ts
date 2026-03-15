@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  clearMatrixFlushedEventDedupes,
+  hasMatrixFlushedEvent,
+  resolveMatrixFlushedEventDedupeFilePath,
+} from "./flushed-event-dedupe.js";
+import {
   buildMatrixInboundPresentation,
   buildMatrixPromptImages,
   detectExplicitMention,
@@ -53,10 +58,11 @@ function createRecordStopError() {
 
 function createRuntimeForInboundTests(params: {
   onRecordInboundSession: (payload: Record<string, unknown>) => Promise<unknown>;
+  stateDir?: string;
 }) {
   return {
     state: {
-      resolveStateDir: () => "/tmp/openclaw-matrix-rust-state",
+      resolveStateDir: () => params.stateDir ?? "/tmp/openclaw-matrix-rust-state",
     },
     channel: {
       routing: {
@@ -835,12 +841,15 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
   const stopAfterRecord = createRecordStopError();
   const firstTimestamp = "2026-03-14T12:00:00.000Z";
   const recorded: Array<Record<string, unknown>> = [];
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-inbound-no-dedupe-"));
+  clearMatrixFlushedEventDedupes();
   setMatrixRustRuntime(
     createRuntimeForInboundTests({
       onRecordInboundSession: async (payload) => {
         recorded.push(payload);
         throw stopAfterRecord;
       },
+      stateDir,
     }),
   );
   const roomHistory = createMatrixRoomHistoryBuffer(5);
@@ -931,6 +940,7 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
   const retainedHistory = roomHistory.snapshot("default:!room:example.org");
   assert.equal(retainedHistory.length, 2);
   assert.deepEqual(retainedHistory[0], {
+    eventId: "$event-1",
     sender: "Alice (alice)",
     body: [
       "just chatting",
@@ -939,17 +949,39 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
     ].join("\n"),
     timestamp: Date.parse(firstTimestamp),
   });
+  assert.equal(retainedHistory[1]?.eventId, "$event-2");
   assert.equal(retainedHistory[1]?.sender, "Bu (bu)");
   assert.equal(retainedHistory[1]?.body, "@bot what do you think?");
   assert.equal(typeof retainedHistory[1]?.timestamp, "number");
+  assert.equal(
+    await hasMatrixFlushedEvent({
+      runtime: { state: { resolveStateDir: () => stateDir } } as any,
+      accountId: account.accountId,
+      event: { roomId: "!room:example.org", eventId: "$event-1" },
+    }),
+    false,
+  );
+  await assert.rejects(
+    fs.readFile(
+      resolveMatrixFlushedEventDedupeFilePath({
+        runtime: { state: { resolveStateDir: () => stateDir } } as any,
+        accountId: account.accountId,
+      }),
+      "utf-8",
+    ),
+    { code: "ENOENT" },
+  );
 });
 
 test("clears buffered room history after inbound session recording succeeds", async () => {
   const recorded: Array<Record<string, unknown>> = [];
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-inbound-dedupe-"));
+  clearMatrixFlushedEventDedupes();
   const runtime = createRuntimeForInboundTests({
     onRecordInboundSession: async (payload) => {
       recorded.push(payload);
     },
+    stateDir,
   });
   runtime.channel.reactions = {
     shouldAckReaction: () => true,
@@ -1023,6 +1055,22 @@ test("clears buffered room history after inbound session recording succeeds", as
 
   assert.equal(recorded.length, 1);
   assert.deepEqual(roomHistory.snapshot("default:!room:example.org"), []);
+  assert.equal(
+    await hasMatrixFlushedEvent({
+      runtime: { state: { resolveStateDir: () => stateDir } } as any,
+      accountId: account.accountId,
+      event: { roomId: "!room:example.org", eventId: "$event-1" },
+    }),
+    true,
+  );
+  assert.equal(
+    await hasMatrixFlushedEvent({
+      runtime: { state: { resolveStateDir: () => stateDir } } as any,
+      accountId: account.accountId,
+      event: { roomId: "!room:example.org", eventId: "$event-2" },
+    }),
+    true,
+  );
 });
 
 test("auto-downloads room attachments into the agent workspace and advertises relative paths", async () => {

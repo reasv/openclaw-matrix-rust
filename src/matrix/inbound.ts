@@ -44,8 +44,10 @@ import {
 } from "./inbound-format.js";
 import {
   buildMatrixHistoryScopeKey,
+  type MatrixBufferedHistoryEntry,
   type MatrixRoomHistoryBuffer,
 } from "./history-buffer.js";
+import { markMatrixEventsFlushed } from "./flushed-event-dedupe.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
@@ -506,7 +508,7 @@ export function buildMatrixInboundPresentation(params: {
 function snapshotInboundHistory(params: {
   roomHistory: MatrixRoomHistoryBuffer;
   scopeKey: string;
-}): Array<{ sender: string; body: string; timestamp?: number }> {
+}): MatrixBufferedHistoryEntry[] {
   const buffered = params.roomHistory.snapshot(params.scopeKey);
   return buffered.slice(0, -1);
 }
@@ -1342,6 +1344,7 @@ export async function handleMatrixInboundEvent(params: {
   });
   if (isRoom) {
     roomHistory.add(historyScopeKey, {
+      eventId: event.eventId,
       sender: senderLabel,
       body: historyBodyText,
       timestamp: Number.isFinite(eventTimestamp) ? eventTimestamp : undefined,
@@ -1423,7 +1426,14 @@ export async function handleMatrixInboundEvent(params: {
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     BodyForAgent: presentation.bodyForAgent,
-    InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
+    InboundHistory:
+      inboundHistory.length > 0
+        ? inboundHistory.map((entry) => ({
+            sender: entry.sender,
+            body: entry.body,
+            timestamp: entry.timestamp,
+          }))
+        : undefined,
     RawBody: baseBodyText,
     CommandBody: baseBodyText,
     From: isDirectMessage ? `matrix:${event.senderId}` : `matrix:channel:${event.roomId}`,
@@ -1494,6 +1504,29 @@ export async function handleMatrixInboundEvent(params: {
         }
       : undefined,
   });
+
+  try {
+    await markMatrixEventsFlushed({
+      runtime,
+      accountId: account.accountId,
+      events: [
+        { roomId: event.roomId, eventId: event.eventId },
+        ...inboundHistory.map((entry) => ({
+          roomId: event.roomId,
+          eventId: entry.eventId,
+        })),
+      ],
+      onDiskError: (err) => {
+        log?.info?.(
+          `[matrix:${account.accountId}] flushed-event dedupe fallback: ${String(err)}`,
+        );
+      },
+    });
+  } catch (err) {
+    log?.info?.(
+      `[matrix:${account.accountId}] failed to mark flushed events: ${String(err)}`,
+    );
+  }
 
   if (isRoom) {
     roomHistory.clear(historyScopeKey);

@@ -1,4 +1,5 @@
 export type MatrixBufferedHistoryEntry = {
+  eventId: string;
   sender: string;
   body: string;
   timestamp?: number;
