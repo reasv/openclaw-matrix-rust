@@ -151,6 +151,62 @@ async function handleNativeEvent(params: {
   );
 }
 
+export async function processNativeEvents(params: {
+  events: MatrixNativeEvent[];
+  account: ResolvedMatrixAccount;
+  roomHistory: MatrixRoomHistoryBuffer;
+  log?: { info: (message: string) => void; debug?: (message: string) => void };
+  setStatus: (next: Record<string, unknown>) => void;
+  client: MatrixNativeClient;
+  cfg: CoreConfig;
+  handleInboundEvent?: typeof handleMatrixInboundEvent;
+}): Promise<void> {
+  const {
+    events,
+    account,
+    roomHistory,
+    log,
+    setStatus,
+    client,
+    cfg,
+    handleInboundEvent = handleMatrixInboundEvent,
+  } = params;
+
+  for (const event of events) {
+    try {
+      if (event.type === "inbound") {
+        await handleInboundEvent({
+          cfg,
+          account,
+          client,
+          event: event.event,
+          roomHistory,
+          log,
+        });
+        continue;
+      }
+
+      await handleNativeEvent({
+        event,
+        account,
+        roomHistory,
+        log,
+        setStatus,
+        client,
+        cfg,
+      });
+    } catch (err) {
+      const eventDetails =
+        event.type === "inbound"
+          ? `room=${event.event.roomId} event=${event.event.eventId}`
+          : `type=${event.type}`;
+      log?.info?.(
+        `[matrix:${account.accountId}] native event failed (${eventDetails}): ${String(err)}`,
+      );
+    }
+  }
+}
+
 function normalizeMatrixTarget(raw: string): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -414,17 +470,15 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
       try {
         while (!ctx.abortSignal.aborted) {
           const events = client.pollEvents();
-          for (const event of events) {
-            await handleNativeEvent({
-              event,
-              account,
-              roomHistory,
-              log: ctx.log,
-              setStatus: ctx.setStatus,
-              client,
-              cfg: ctx.cfg as CoreConfig,
-            });
-          }
+          await processNativeEvents({
+            events,
+            account,
+            roomHistory,
+            log: ctx.log,
+            setStatus: ctx.setStatus,
+            client,
+            cfg: ctx.cfg as CoreConfig,
+          });
           await sleep(250, ctx.abortSignal);
         }
       } finally {
