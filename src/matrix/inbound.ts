@@ -266,11 +266,6 @@ function isMatrixImageMime(contentType?: string): boolean {
   return contentType?.trim().toLowerCase().startsWith("image/") ?? false;
 }
 
-function isMatrixImageFilename(filename?: string): boolean {
-  const ext = path.extname(filename?.trim() ?? "").toLowerCase();
-  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif", ".heic", ".heif"].includes(ext);
-}
-
 function buildPromptImageFromBase64(params: {
   dataBase64: string;
   contentType?: string;
@@ -912,9 +907,7 @@ export async function sendMatrixMedia(params: {
     runtime,
   });
   const captionText = params.text?.trim() ? params.text : undefined;
-  const shouldSendCaptionAsSeparateMessage =
-    Boolean(captionText) &&
-    (isMatrixImageMime(loaded.contentType) || isMatrixImageFilename(loaded.fileName));
+  const shouldSendCaptionAsSeparateMessage = Boolean(captionText);
   const result = params.client.uploadMedia({
     roomId: params.to,
     filename: loaded.fileName ?? "attachment",

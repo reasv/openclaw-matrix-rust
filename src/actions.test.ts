@@ -367,6 +367,7 @@ test("send action keeps text-only sends on sendMessage", async () => {
 test("send action uploads local media with caption and trusted mediaLocalRoots", async () => {
   const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
   setMatrixRustRuntime({
     state: {
       resolveStateDir: () => "/tmp/openclaw-test-state",
@@ -397,6 +398,13 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
         messageId: "$file",
         filename: String(request.filename),
         contentType: String(request.contentType),
+      };
+    },
+    sendMessage: (request) => {
+      sendMessageCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$caption",
       };
     },
   });
@@ -435,14 +443,21 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
       filename: "report.pdf",
       contentType: "application/pdf",
       dataBase64: Buffer.from("pdf-bytes").toString("base64"),
-      caption: "Quarterly report",
+      caption: undefined,
       replyToId: "$parent",
+      threadId: "$thread",
+    },
+  ]);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "Quarterly report",
       threadId: "$thread",
     },
   ]);
 });
 
-test("send action sends image captions as a follow-up text event", async () => {
+test("send action sends attachment captions as a follow-up text event", async () => {
   const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   const sendMessageCalls: Array<Record<string, unknown>> = [];

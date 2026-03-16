@@ -935,6 +935,7 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
     to: "!room:example.org",
     mediaUrl: "https://example.com/report.pdf",
     mediaLocalRoots: ["/tmp/workspace-agent"],
+    text: "Quarterly report",
   });
 
   assert.deepEqual(result, {
@@ -960,7 +961,13 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
       threadId: undefined,
     },
   ]);
-  assert.deepEqual(sendMessageCalls, []);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "Quarterly report",
+      threadId: undefined,
+    },
+  ]);
 });
 
 test("buffers unmentioned room messages and flushes them on the next mention", async () => {
