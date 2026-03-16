@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { processNativeEvents } from "./channel.js";
-import { createMatrixRoomHistoryBuffer } from "./matrix/history-buffer.js";
+import { buildMatrixHistoryScopeKey, createMatrixRoomHistoryBuffer } from "./matrix/history-buffer.js";
+import {
+  clearMatrixLatestInboundTracker,
+  snapshotMatrixReplyProgress,
+} from "./matrix/reply-policy.js";
 import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
 import type {
   CoreConfig,
@@ -138,6 +142,68 @@ test("processNativeEvents serializes inbound work for the same session key", asy
 
   assert.equal(maxInFlight, 1);
   assert.deepEqual(handledInbound, ["start:$first", "end:$first", "start:$second", "end:$second"]);
+});
+
+test("processNativeEvents updates reply progress before same-session work drains", async () => {
+  clearMatrixLatestInboundTracker();
+  const account = createAccount();
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
+  const releaseFirst = createDeferred<void>();
+  const firstStarted = createDeferred<void>();
+
+  const events: MatrixNativeEvent[] = [
+    {
+      type: "inbound",
+      event: {
+        ...createInboundEvent("$first"),
+        timestamp: "2026-03-15T00:00:00.000Z",
+      },
+    },
+    {
+      type: "inbound",
+      event: {
+        ...createInboundEvent("$second"),
+        timestamp: "2026-03-15T00:00:05.000Z",
+      },
+    },
+  ];
+
+  await processNativeEvents({
+    events,
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    resolveInboundRoute: () => createRoute("agent:main:matrix:channel:!room:example.org"),
+    handleInboundEvent: async ({ event }) => {
+      if (event.eventId === "$first") {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+    },
+  });
+
+  await firstStarted.promise;
+  assert.deepEqual(
+    snapshotMatrixReplyProgress({
+      scopeKey: buildMatrixHistoryScopeKey({
+        accountId: account.accountId,
+        roomId: "!room:example.org",
+      }),
+      currentEventId: "$first",
+      currentTimestampMs: Date.parse("2026-03-15T00:00:00.000Z"),
+    }),
+    { newerNonselfExists: true },
+  );
+
+  releaseFirst.resolve();
+  assert.equal(await dispatcher.waitForIdle({ timeoutMs: 1_000 }), true);
+  clearMatrixLatestInboundTracker();
 });
 
 test("processNativeEvents runs different session keys in parallel", async () => {
