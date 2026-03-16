@@ -30,9 +30,11 @@ import {
 } from "./matrix/inbound.js";
 import {
   createMatrixRoomHistoryBuffer,
+  buildMatrixHistoryScopeKey,
   resolveMatrixRoomHistoryMaxEntries,
   type MatrixRoomHistoryBuffer,
 } from "./matrix/history-buffer.js";
+import { recordMatrixLatestInboundEvent } from "./matrix/reply-policy.js";
 import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
 import { backfillMatrixRoomHistory } from "./matrix/startup-backfill.js";
 import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
@@ -216,6 +218,24 @@ export async function processNativeEvents(params: {
           account,
           event: event.event,
         });
+        const eventTimestampMs = Date.parse(event.event.timestamp);
+        const scopeKey = buildMatrixHistoryScopeKey({
+          accountId: account.accountId,
+          roomId: event.event.roomId,
+          threadRootId: event.event.threadRootId,
+        });
+        const selfUserId = client.diagnostics().userId?.trim() || account.userId?.trim();
+        if (
+          Number.isFinite(eventTimestampMs) &&
+          event.event.senderId.trim() &&
+          event.event.senderId !== selfUserId
+        ) {
+          recordMatrixLatestInboundEvent({
+            scopeKey,
+            eventId: event.event.eventId,
+            timestampMs: eventTimestampMs,
+          });
+        }
         void inboundDispatcher
           .enqueue(route.sessionKey, async () => {
             await handleInboundEvent({
