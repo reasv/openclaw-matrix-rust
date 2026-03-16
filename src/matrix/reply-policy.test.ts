@@ -7,6 +7,7 @@ import {
   classifyReplyTargetKind,
   createMatrixReplyPolicyController,
   recordMatrixLatestInboundEvent,
+  resolveMatrixEffectiveReplyToId,
   snapshotMatrixReplyProgress,
   type MatrixReplyPayload,
 } from "./reply-policy.js";
@@ -28,6 +29,31 @@ test("applyMatrixReplyHeuristic always preserves explicit non-current targets", 
     elapsedMs: 0,
   });
   assert.deepEqual(result, payload);
+});
+
+test("resolveMatrixEffectiveReplyToId preserves explicit ids even when replyToMode is off", () => {
+  assert.equal(
+    resolveMatrixEffectiveReplyToId({
+      payloadReplyToId: "$older",
+      currentEventId: "$current",
+      replyToMode: "off",
+    }),
+    "$older",
+  );
+  assert.equal(
+    resolveMatrixEffectiveReplyToId({
+      currentEventId: "$current",
+      replyToMode: "off",
+    }),
+    undefined,
+  );
+  assert.equal(
+    resolveMatrixEffectiveReplyToId({
+      currentEventId: "$current",
+      replyToMode: "first",
+    }),
+    "$current",
+  );
 });
 
 test("applyMatrixReplyHeuristic strips current replies in DMs", () => {

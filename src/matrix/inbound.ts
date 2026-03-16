@@ -48,6 +48,14 @@ import {
   type MatrixRoomHistoryBuffer,
 } from "./history-buffer.js";
 import { markMatrixEventsFlushed } from "./flushed-event-dedupe.js";
+import {
+  createMatrixReplyPolicyController,
+  recordMatrixLatestInboundEvent,
+  resolveMatrixEffectiveReplyToId,
+  snapshotMatrixReplyProgress,
+  type MatrixReplyDispatchKind,
+  type MatrixReplyPolicyScope,
+} from "./reply-policy.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
@@ -1086,8 +1094,11 @@ async function deliverReplyPayload(params: {
       ? [payload.mediaUrl]
       : [];
   const defaultThreadId = resolveThreadTarget(account, inboundEvent);
-  const defaultReplyToId =
-    account.config.replyToMode === "off" ? undefined : (payload.replyToId ?? inboundEvent.eventId);
+  const defaultReplyToId = resolveMatrixEffectiveReplyToId({
+    payloadReplyToId: payload.replyToId,
+    currentEventId: inboundEvent.eventId,
+    replyToMode: account.config.replyToMode ?? "off",
+  });
 
   if (mediaUrls.length > 0) {
     let first = true;
@@ -1377,6 +1388,13 @@ export async function handleMatrixInboundEvent(params: {
     roomId: event.roomId,
     threadRootId: event.threadRootId,
   });
+  if (Number.isFinite(eventTimestamp)) {
+    recordMatrixLatestInboundEvent({
+      scopeKey: historyScopeKey,
+      eventId: event.eventId,
+      timestampMs: eventTimestamp,
+    });
+  }
   if (isRoom) {
     roomHistory.add(historyScopeKey, {
       eventId: event.eventId,
@@ -1615,6 +1633,32 @@ export async function handleMatrixInboundEvent(params: {
       log?.info?.(`[matrix:${account.accountId}] typing stop failed for ${event.roomId}: ${String(err)}`);
     },
   });
+  const policyScope: MatrixReplyPolicyScope = isDirectMessage
+    ? "dm"
+    : threadTarget
+      ? "thread"
+      : "room";
+  const currentTimestampMs = Number.isFinite(eventTimestamp) ? eventTimestamp : Date.now();
+  const replyPolicy = createMatrixReplyPolicyController({
+    scope: policyScope,
+    currentEventId: event.eventId,
+    currentTimestampMs,
+    getProgress: () =>
+      snapshotMatrixReplyProgress({
+        scopeKey: historyScopeKey,
+        currentEventId: event.eventId,
+        currentTimestampMs,
+      }),
+    deliverNow: async (payload) => {
+      await deliverReplyPayload({
+        cfg,
+        account,
+        client,
+        inboundEvent: event,
+        payload,
+      });
+    },
+  });
   const { dispatcher, replyOptions, markDispatchIdle } =
     runtime.channel.reply.createReplyDispatcherWithTyping({
       ...prefixOptions,
@@ -1626,14 +1670,12 @@ export async function handleMatrixInboundEvent(params: {
         mediaUrl?: string;
         mediaUrls?: string[];
         replyToId?: string;
-      }) => {
-        await deliverReplyPayload({
-          cfg,
-          account,
-          client,
-          inboundEvent: event,
-          payload,
-        });
+      }, info?: { kind?: string }) => {
+        const kind: MatrixReplyDispatchKind =
+          info?.kind === "tool" || info?.kind === "block" || info?.kind === "final"
+            ? info.kind
+            : "final";
+        await replyPolicy.deliver(payload, kind);
       },
       onError: (err: unknown, info: { kind?: string }) => {
         log?.info?.(
@@ -1646,7 +1688,8 @@ export async function handleMatrixInboundEvent(params: {
     cfg,
     ctxPayload,
     dispatcher,
-    onSettled: () => {
+    onSettled: async () => {
+      await replyPolicy.flushPendingFinal();
       markDispatchIdle();
     },
     replyOptions: {

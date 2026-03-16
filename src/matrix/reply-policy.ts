@@ -42,6 +42,18 @@ export function classifyReplyTargetKind(
   return replyToId === currentEventId ? "current" : "explicit_other";
 }
 
+export function resolveMatrixEffectiveReplyToId(params: {
+  payloadReplyToId?: string;
+  currentEventId: string;
+  replyToMode: "off" | "first" | "all";
+}): string | undefined {
+  const explicit = params.payloadReplyToId?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  return params.replyToMode === "off" ? undefined : params.currentEventId;
+}
+
 function clearReplyToId(payload: MatrixReplyPayload): MatrixReplyPayload {
   if (!payload.replyToId) {
     return payload;
