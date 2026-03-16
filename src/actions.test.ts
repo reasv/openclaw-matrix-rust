@@ -442,6 +442,99 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
   ]);
 });
 
+test("send action sends image captions as a follow-up text event", async () => {
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-test-state",
+    },
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("image-bytes"),
+          contentType: "image/png",
+          fileName: "render.png",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+  installReadyClient({
+    uploadMedia: (request) => {
+      uploadMediaCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$image",
+        filename: String(request.filename),
+        contentType: String(request.contentType),
+      };
+    },
+    sendMessage: (request) => {
+      sendMessageCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$caption",
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "send",
+    params: {
+      to: "!room:example.org",
+      message: "Render result",
+      media: "./out/render.png",
+      replyTo: "$parent",
+      threadId: "$thread",
+    },
+    cfg: baseConfig,
+    mediaLocalRoots: ["/tmp/agent-root"],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    channel: "matrix",
+    roomId: "!room:example.org",
+    messageId: "$image",
+  });
+  assert.deepEqual(loadWebMediaCalls, [
+    {
+      mediaUrl: "./out/render.png",
+      options: {
+        maxBytes: 20 * 1024 * 1024,
+        localRoots: ["/tmp/agent-root"],
+      },
+    },
+  ]);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "render.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("image-bytes").toString("base64"),
+      caption: undefined,
+      replyToId: "$parent",
+      threadId: "$thread",
+    },
+  ]);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "Render result",
+      threadId: "$thread",
+    },
+  ]);
+});
+
 test("send action accepts attachment-only sends via filePath alias", async () => {
   const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];

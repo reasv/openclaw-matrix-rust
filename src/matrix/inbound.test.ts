@@ -793,6 +793,7 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
   const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
   const fetchRemoteMediaCalls: unknown[] = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
 
   setMatrixRustRuntime({
     media: {
@@ -831,6 +832,13 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
           contentType: String(request.contentType),
         };
       },
+      sendMessage: (request: Record<string, unknown>) => {
+        sendMessageCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$caption",
+        };
+      },
     } as any,
     to: "!room:example.org",
     mediaUrl: "/tmp/workspace-agent/out/render.png",
@@ -859,8 +867,15 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
       filename: "render.png",
       contentType: "image/png",
       dataBase64: Buffer.from("local-image").toString("base64"),
-      caption: "caption",
+      caption: undefined,
       replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "caption",
       threadId: undefined,
     },
   ]);
@@ -870,6 +885,7 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
   const loadWebMediaCalls: unknown[] = [];
   const fetchRemoteMediaCalls: Array<Record<string, unknown>> = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
 
   setMatrixRustRuntime({
     media: {
@@ -908,6 +924,13 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
           contentType: String(request.contentType),
         };
       },
+      sendMessage: (request: Record<string, unknown>) => {
+        sendMessageCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$caption",
+        };
+      },
     } as any,
     to: "!room:example.org",
     mediaUrl: "https://example.com/report.pdf",
@@ -937,6 +960,7 @@ test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async 
       threadId: undefined,
     },
   ]);
+  assert.deepEqual(sendMessageCalls, []);
 });
 
 test("buffers unmentioned room messages and flushes them on the next mention", async () => {

@@ -266,6 +266,11 @@ function isMatrixImageMime(contentType?: string): boolean {
   return contentType?.trim().toLowerCase().startsWith("image/") ?? false;
 }
 
+function isMatrixImageFilename(filename?: string): boolean {
+  const ext = path.extname(filename?.trim() ?? "").toLowerCase();
+  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif", ".heic", ".heif"].includes(ext);
+}
+
 function buildPromptImageFromBase64(params: {
   dataBase64: string;
   contentType?: string;
@@ -906,15 +911,26 @@ export async function sendMatrixMedia(params: {
     mediaLocalRoots: params.mediaLocalRoots,
     runtime,
   });
+  const captionText = params.text?.trim() ? params.text : undefined;
+  const shouldSendCaptionAsSeparateMessage =
+    Boolean(captionText) &&
+    (isMatrixImageMime(loaded.contentType) || isMatrixImageFilename(loaded.fileName));
   const result = params.client.uploadMedia({
     roomId: params.to,
     filename: loaded.fileName ?? "attachment",
     contentType: loaded.contentType ?? "application/octet-stream",
     dataBase64: loaded.buffer.toString("base64"),
-    caption: params.text ?? undefined,
+    caption: shouldSendCaptionAsSeparateMessage ? undefined : (params.text ?? undefined),
     replyToId: params.replyToId ?? undefined,
     threadId: params.threadId ?? undefined,
   });
+  if (shouldSendCaptionAsSeparateMessage) {
+    params.client.sendMessage({
+      roomId: params.to,
+      text: captionText ?? "",
+      threadId: params.threadId ?? undefined,
+    });
+  }
   return {
     channel: "matrix",
     to: params.to,
