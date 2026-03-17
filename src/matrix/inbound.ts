@@ -42,6 +42,7 @@ import {
   resolveMatrixReadableBody,
   resolveMatrixSenderUsername,
 } from "./inbound-format.js";
+import { detectSillyTavernCardFromBuffer } from "./sillytavern-card-detect.js";
 import {
   buildMatrixHistoryScopeKey,
   type MatrixBufferedHistoryEntry,
@@ -80,6 +81,8 @@ type DownloadedMatrixAttachment = {
   filename?: string;
   kind?: string;
   savedTo?: string;
+  detected?: string;
+  cardName?: string;
 };
 
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
@@ -633,6 +636,11 @@ export async function resolveMatrixReplyContext(params: {
       roomId: params.roomId,
       eventId: params.replySummary.eventId,
     });
+    const downloadedBuffer = Buffer.from(downloaded.dataBase64, "base64");
+    const detectedCard =
+      downloaded.kind === "image" || downloaded.contentType?.trim().toLowerCase().startsWith("image/")
+        ? detectSillyTavernCardFromBuffer(downloadedBuffer)
+        : undefined;
     const savedTo = await maybeAutoDownloadMatrixAttachmentToWorkspace({
       cfg: params.cfg,
       account: params.account,
@@ -650,6 +658,8 @@ export async function resolveMatrixReplyContext(params: {
           contentType: downloaded.contentType,
           kind: downloaded.kind,
           savedTo,
+          detected: detectedCard?.detected,
+          cardName: detectedCard?.cardName,
         },
       ],
       heading: "Reply attachments",
@@ -991,6 +1001,8 @@ async function resolveMatrixEventAttachmentContext(params: {
     contentType?: string;
     kind?: string;
     savedTo?: string;
+    detected?: string;
+    cardName?: string;
   }>;
   prefetched: DownloadedMatrixAttachment[];
 }> {
@@ -1002,20 +1014,31 @@ async function resolveMatrixEventAttachmentContext(params: {
     contentType?: string;
     kind?: string;
     savedTo?: string;
+    detected?: string;
+    cardName?: string;
   }> = [];
   const prefetched: DownloadedMatrixAttachment[] = [];
   for (const [index, item] of params.event.media.entries()) {
     let filename = item.filename;
     let contentType = item.contentType;
     let savedTo: string | undefined;
+    let detected: string | undefined;
+    let cardName: string | undefined;
     if (shouldAttemptAutoDownload) {
       try {
         const downloaded = params.client.downloadMedia({
           roomId: params.event.roomId,
           eventId: params.event.eventId,
         });
+        const downloadedBuffer = Buffer.from(downloaded.dataBase64, "base64");
+        const detectedCard =
+          downloaded.kind === "image" || downloaded.contentType?.trim().toLowerCase().startsWith("image/")
+            ? detectSillyTavernCardFromBuffer(downloadedBuffer)
+            : undefined;
         filename = downloaded.filename ?? filename;
         contentType = downloaded.contentType ?? contentType;
+        detected = detectedCard?.detected;
+        cardName = detectedCard?.cardName;
         savedTo = await maybeAutoDownloadMatrixAttachmentToWorkspace({
           cfg: params.cfg,
           account: params.account,
@@ -1031,6 +1054,8 @@ async function resolveMatrixEventAttachmentContext(params: {
           contentType,
           kind: item.kind,
           savedTo,
+          detected,
+          cardName,
         });
       } catch (err) {
         params.log?.debug?.(
@@ -1044,6 +1069,8 @@ async function resolveMatrixEventAttachmentContext(params: {
       contentType,
       kind: item.kind,
       savedTo,
+      detected,
+      cardName,
     });
   }
   return {

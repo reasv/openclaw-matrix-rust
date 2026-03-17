@@ -35,6 +35,11 @@ import { createMatrixRoomHistoryBuffer } from "./history-buffer.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 import { setMatrixRustRuntime } from "../runtime.js";
 
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+  "base64",
+);
+
 function createResolvedAccount(
   config: ResolvedMatrixAccount["config"] = {
     homeserver: "https://matrix.example.org",
@@ -142,6 +147,70 @@ function createInboundEvent(overrides: Partial<MatrixInboundEvent> = {}): Matrix
     media: [],
     ...overrides,
   };
+}
+
+function buildSillyTavernCardPng(name: string): Buffer {
+  const card = {
+    spec: "chara_card_v2",
+    spec_version: "2.0",
+    data: {
+      name,
+      description: "",
+      personality: "",
+      scenario: "",
+      first_mes: "",
+      mes_example: "",
+      creator_notes: "",
+      system_prompt: "",
+      post_history_instructions: "",
+      alternate_greetings: [],
+      tags: [],
+      creator: "",
+      character_version: "",
+      extensions: {},
+    },
+  };
+  const payload = Buffer.from(JSON.stringify(card), "utf8").toString("base64");
+  return insertTextChunk(TINY_PNG, "chara", payload);
+}
+
+function insertTextChunk(png: Buffer, keyword: string, text: string): Buffer {
+  const iendOffset = findPngChunkOffset(png, "IEND");
+  const chunk = encodePngChunk("tEXt", Buffer.concat([Buffer.from(keyword, "latin1"), Buffer.from([0]), Buffer.from(text, "latin1")]));
+  return Buffer.concat([png.subarray(0, iendOffset), chunk, png.subarray(iendOffset)]);
+}
+
+function findPngChunkOffset(png: Buffer, chunkType: string): number {
+  let offset = 8;
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString("latin1", offset + 4, offset + 8);
+    if (type === chunkType) {
+      return offset;
+    }
+    offset += 12 + length;
+  }
+  throw new Error(`PNG chunk ${chunkType} not found`);
+}
+
+function encodePngChunk(type: string, data: Buffer): Buffer {
+  const typeBuffer = Buffer.from(type, "latin1");
+  const lengthBuffer = Buffer.alloc(4);
+  lengthBuffer.writeUInt32BE(data.length, 0);
+  const crcBuffer = Buffer.alloc(4);
+  crcBuffer.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([lengthBuffer, typeBuffer, data, crcBuffer]);
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const value of buffer) {
+    crc ^= value;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) !== 0 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 test("resolveMatrixInboundRoute builds a room-scoped parent session for parent-bound DMs", () => {
@@ -504,6 +573,28 @@ test("includes saved workspace paths in attachment manifest text when present", 
   );
 });
 
+test("includes SillyTavern card detection in attachment manifest text when present", () => {
+  assert.deepEqual(
+    buildMatrixAttachmentTextBlocks({
+      attachments: [
+        {
+          index: 0,
+          filename: "hero.png",
+          contentType: "image/png",
+          kind: "image",
+          savedTo: "./msg-attach/ABCDE12345.png",
+          detected: "sillytavern-character-card",
+          cardName: "Hero Example",
+        },
+      ],
+    }),
+    [
+      "[Attachments: 1]",
+      '[Attachment 1] filename="hero.png" type="image/png" saved to="./msg-attach/ABCDE12345.png" detected="sillytavern-character-card" card_name="Hero Example"',
+    ],
+  );
+});
+
 test("resolves reply context with display names and one-hop previews", async () => {
   const cfg: CoreConfig = {
     channels: {
@@ -683,6 +774,85 @@ test("resolves reply attachment manifests and reply image media", async () => {
   assert.ok(replySavedName);
   const savedPath = path.join(workspaceDir, "msg-attach", replySavedName);
   assert.equal(await fs.readFile(savedPath, "utf8"), "reply-image");
+});
+
+test("marks reply attachment manifests when the reply image is a SillyTavern card", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-reply-card-"));
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async () => undefined,
+    }),
+  );
+  const cardPng = buildSillyTavernCardPng("Hero Example");
+  const replyContext = await resolveMatrixReplyContext({
+    cfg: {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+        },
+      },
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          password: "secret",
+          groupPolicy: "open",
+          autoDownloadAttachmentMaxBytes: -1,
+        },
+      },
+    } as CoreConfig,
+    account: createResolvedAccount({
+      homeserver: "https://matrix.example.org",
+      userId: "@bot:example.org",
+      password: "secret",
+      groupPolicy: "open",
+      autoDownloadAttachmentMaxBytes: -1,
+    } as ResolvedMatrixAccount["config"]),
+    agentId: "main",
+    isRoom: true,
+    client: {
+      ...createClientForInboundTests(),
+      memberInfo: () => ({
+        displayName: "Alice",
+      }),
+      downloadMedia: () => ({
+        roomId: "!room:example.org",
+        eventId: "$parent-card",
+        kind: "image",
+        filename: "hero.png",
+        contentType: "image/png",
+        dataBase64: cardPng.toString("base64"),
+      }),
+    } as any,
+    roomId: "!room:example.org",
+    replyToId: "$parent-card",
+    replySummary: {
+      eventId: "$parent-card",
+      sender: "@alice:example.org",
+      body: "see card",
+      timestamp: new Date().toISOString(),
+    },
+    persistPreviewMedia: async ({ media }) =>
+      media.map((item, index) => ({
+        path: `/tmp/reply-card-${index}.png`,
+        filename: item.filename,
+        kind: item.kind,
+        contentType: item.contentType,
+        promptImage: item.contentType?.startsWith("image/")
+          ? {
+              type: "image",
+              data: item.dataBase64,
+              mimeType: item.contentType,
+            }
+          : undefined,
+      })),
+  });
+
+  assert.equal(replyContext.replyAttachmentTextBlocks[0], "[Reply attachments: 1]");
+  assert.match(
+    replyContext.replyAttachmentTextBlocks[1] ?? "",
+    /^\[Reply attachment 1\] filename="hero\.png" type="image\/png" saved to="\.\/msg-attach\/[A-Z2-7]{10}\.png" detected="sillytavern-character-card" card_name="Hero Example"$/,
+  );
 });
 
 test("filters MediaPaths separately from prompt image delivery", () => {
@@ -1385,6 +1555,113 @@ test("auto-downloads room attachments into the agent workspace and advertises re
   assert.ok(savedName);
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
   assert.equal(await fs.readFile(savedPath, "utf8"), "buffered-image");
+});
+
+test("auto-downloads SillyTavern card images and advertises card detection in history", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-buffered-card-"));
+  const bufferedTimestamp = "2026-03-14T12:00:00.000Z";
+  const cardPng = buildSillyTavernCardPng("Hero Example");
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    agents: {
+      defaults: {
+        workspace: workspaceDir,
+      },
+    },
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        autoDownloadAttachmentMaxBytes: -1,
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount(cfg.channels?.matrix as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    downloadMedia: ({ eventId }: { eventId: string }) => {
+      assert.equal(eventId, "$buffered-card");
+      return {
+        roomId: "!room:example.org",
+        eventId,
+        kind: "image",
+        filename: "hero.png",
+        contentType: "image/png",
+        dataBase64: cardPng.toString("base64"),
+      };
+    },
+  } as any;
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$buffered-card",
+      body: "buffered card",
+      timestamp: bufferedTimestamp,
+      media: [
+        {
+          index: 0,
+          kind: "image",
+          filename: "hero.png",
+          contentType: "image/png",
+        },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$mentioned-card",
+        senderId: "@bu:example.org",
+        senderName: "Bu",
+        body: "@bot inspect card",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  const inboundHistory = ctx.InboundHistory as Array<{
+    sender: string;
+    body: string;
+    timestamp?: number;
+  }>;
+  assert.equal(inboundHistory.length, 1);
+  assert.equal(inboundHistory[0]?.sender, "Alice (alice)");
+  assert.equal(inboundHistory[0]?.timestamp, Date.parse(bufferedTimestamp));
+  assert.match(
+    inboundHistory[0]?.body ?? "",
+    /^buffered card\n\[Attachments: 1\]\n\[Attachment 1\] filename="hero\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)" detected="sillytavern-character-card" card_name="Hero Example"$/,
+  );
+  const savedName = (inboundHistory[0]?.body ?? "").match(
+    /saved to="\.\/msg-attach\/([^"]+)"/,
+  )?.[1];
+  assert.ok(savedName);
+  const savedPath = path.join(workspaceDir, "msg-attach", savedName);
+  assert.deepEqual(await fs.readFile(savedPath), cardPng);
 });
 
 test("keeps thread history separate from room-main history", async () => {
