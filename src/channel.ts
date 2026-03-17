@@ -227,6 +227,11 @@ export async function processNativeEvents(params: {
     }
     const batchPreviousEvents =
       delivery.events.length > 1 ? delivery.events.slice(0, -1) : undefined;
+    if (batchPreviousEvents && batchPreviousEvents.length > 0) {
+      log?.debug?.(
+        `[matrix:${account.accountId}] inbound batch dispatch session=${delivery.route.sessionKey} subject=${subject.eventId} previous=${batchPreviousEvents.length} events=${delivery.events.map((entry) => entry.eventId).join(",")}`,
+      );
+    }
     if (!inboundDispatcher) {
       await handleInboundEvent({
         cfg,
@@ -260,7 +265,15 @@ export async function processNativeEvents(params: {
   };
 
   if (inboundBatcher) {
-    const ready = flushInboundBatcherAll ? inboundBatcher.flushAll() : inboundBatcher.flushReady();
+    const ready = flushInboundBatcherAll
+      ? inboundBatcher.flushAll({
+          accountId: account.accountId,
+          log,
+        })
+      : inboundBatcher.flushReady(undefined, {
+          accountId: account.accountId,
+          log,
+        });
     for (const delivery of ready) {
       await dispatchInbound(delivery);
     }
@@ -293,7 +306,13 @@ export async function processNativeEvents(params: {
           event: event.event,
         });
         if (inboundBatcher) {
-          for (const delivery of inboundBatcher.push({ route, event: event.event })) {
+          for (const delivery of inboundBatcher.push(
+            { route, event: event.event },
+            {
+              accountId: account.accountId,
+              log,
+            },
+          )) {
             await dispatchInbound(delivery);
           }
           continue;
@@ -326,7 +345,15 @@ export async function processNativeEvents(params: {
   }
 
   if (inboundBatcher) {
-    const ready = flushInboundBatcherAll ? inboundBatcher.flushAll() : inboundBatcher.flushReady();
+    const ready = flushInboundBatcherAll
+      ? inboundBatcher.flushAll({
+          accountId: account.accountId,
+          log,
+        })
+      : inboundBatcher.flushReady(undefined, {
+          accountId: account.accountId,
+          log,
+        });
     for (const delivery of ready) {
       await dispatchInbound(delivery);
     }

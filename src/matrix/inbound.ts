@@ -341,14 +341,49 @@ export function resolveMatrixBatchMediaSelection(params: {
   media: SavedMatrixMedia[];
   promptImages: PromptImageContent[];
 } {
+  return describeMatrixBatchMediaSelection(params).selection;
+}
+
+function describeMatrixBatchMediaSelection(params: {
+  subject: {
+    media: SavedMatrixMedia[];
+    promptImages: PromptImageContent[];
+  };
+  previous: Array<{
+    media: SavedMatrixMedia[];
+    promptImages: PromptImageContent[];
+  }>;
+}): {
+  selection: {
+    media: SavedMatrixMedia[];
+    promptImages: PromptImageContent[];
+  };
+  source: "subject" | "previous" | "none";
+  previousIndex?: number;
+} {
   if (params.subject.media.length > 0 || params.subject.promptImages.length > 0) {
-    return params.subject;
+    return {
+      selection: params.subject,
+      source: "subject",
+    };
   }
 
-  const fallback = [...params.previous]
-    .reverse()
-    .find((entry) => entry.media.length > 0 || entry.promptImages.length > 0);
-  return fallback ?? params.subject;
+  for (let index = params.previous.length - 1; index >= 0; index -= 1) {
+    const entry = params.previous[index];
+    if (!entry || (entry.media.length === 0 && entry.promptImages.length === 0)) {
+      continue;
+    }
+    return {
+      selection: entry,
+      source: "previous",
+      previousIndex: index,
+    };
+  }
+
+  return {
+    selection: params.subject,
+    source: "none",
+  };
 }
 
 function resolveBaseRouteSession(params: {
@@ -852,6 +887,50 @@ function snapshotInboundHistory(params: {
 }): MatrixBufferedHistoryEntry[] {
   const buffered = params.roomHistory.snapshot(params.scopeKey);
   return buffered.slice(0, -1);
+}
+
+function logMatrixRoomBufferAction(params: {
+  accountId: string;
+  log?: { debug?: (message: string) => void };
+  action: "add" | "hold" | "replay" | "clear";
+  scopeKey: string;
+  eventId?: string;
+  count?: number;
+  source?: "batch-previous" | "subject";
+  reason?: string;
+}): void {
+  const eventText = params.eventId ? ` event=${params.eventId}` : "";
+  const countText = typeof params.count === "number" ? ` count=${params.count}` : "";
+  const sourceText = params.source ? ` source=${params.source}` : "";
+  const reasonText = params.reason ? ` reason=${params.reason}` : "";
+  params.log?.debug?.(
+    `[matrix:${params.accountId}] room buffer ${params.action} scope=${params.scopeKey}${eventText}${countText}${sourceText}${reasonText}`,
+  );
+}
+
+function addMatrixRoomHistoryEntries(params: {
+  roomHistory: MatrixRoomHistoryBuffer;
+  scopeKey: string;
+  entries: MatrixBufferedHistoryEntry[];
+  accountId: string;
+  log?: { debug?: (message: string) => void };
+  source: "batch-previous" | "subject";
+  eventId: string;
+}): void {
+  for (const entry of params.entries) {
+    params.roomHistory.add(params.scopeKey, entry);
+  }
+  if (params.entries.length > 0) {
+    logMatrixRoomBufferAction({
+      accountId: params.accountId,
+      log: params.log,
+      action: "add",
+      scopeKey: params.scopeKey,
+      eventId: params.eventId,
+      count: params.entries.length,
+      source: params.source,
+    });
+  }
 }
 
 export async function resolveMatrixReplyContext(params: {
@@ -1640,17 +1719,21 @@ export async function handleMatrixInboundEvent(params: {
   const previousBatchHistoryEntries = previousBatchContexts.flatMap((entry) =>
     entry.historyEntry ? [entry.historyEntry] : [],
   );
+  const historyScopeKey = buildMatrixHistoryScopeKey({
+    accountId: account.accountId,
+    roomId: event.roomId,
+    threadRootId: event.threadRootId,
+  });
   if (isRoom && subjectTriggerState.resolvedCommandGate.shouldBlock) {
-    for (const entry of previousBatchHistoryEntries) {
-      roomHistory.add(
-        buildMatrixHistoryScopeKey({
-          accountId: account.accountId,
-          roomId: event.roomId,
-          threadRootId: event.threadRootId,
-        }),
-        entry,
-      );
-    }
+    addMatrixRoomHistoryEntries({
+      roomHistory,
+      scopeKey: historyScopeKey,
+      entries: previousBatchHistoryEntries,
+      accountId: account.accountId,
+      log,
+      source: "batch-previous",
+      eventId: event.eventId,
+    });
     logInboundDrop({
       log: (message: string) => log?.info?.(message),
       channel: "matrix",
@@ -1660,11 +1743,6 @@ export async function handleMatrixInboundEvent(params: {
     return;
   }
 
-  const historyScopeKey = buildMatrixHistoryScopeKey({
-    accountId: account.accountId,
-    roomId: event.roomId,
-    threadRootId: event.threadRootId,
-  });
   if (Number.isFinite(eventTimestamp)) {
     recordMatrixLatestInboundEvent({
       scopeKey: historyScopeKey,
@@ -1680,15 +1758,38 @@ export async function handleMatrixInboundEvent(params: {
   });
   const batchTriggered = previousBatchContexts.some((entry) => entry.triggerState.shouldTrigger);
   if (isRoom) {
-    for (const entry of previousBatchHistoryEntries) {
-      roomHistory.add(historyScopeKey, entry);
-    }
+    addMatrixRoomHistoryEntries({
+      roomHistory,
+      scopeKey: historyScopeKey,
+      entries: previousBatchHistoryEntries,
+      accountId: account.accountId,
+      log,
+      source: "batch-previous",
+      eventId: event.eventId,
+    });
     if (subjectHistoryEntry) {
-      roomHistory.add(historyScopeKey, subjectHistoryEntry);
+      addMatrixRoomHistoryEntries({
+        roomHistory,
+        scopeKey: historyScopeKey,
+        entries: [subjectHistoryEntry],
+        accountId: account.accountId,
+        log,
+        source: "subject",
+        eventId: event.eventId,
+      });
     }
   }
   await recordInboundEmojiUsage({ client, event });
   if (isRoom && !subjectTriggerState.shouldTrigger && !batchTriggered) {
+    logMatrixRoomBufferAction({
+      accountId: account.accountId,
+      log,
+      action: "hold",
+      scopeKey: historyScopeKey,
+      eventId: event.eventId,
+      count: roomHistory.snapshot(historyScopeKey).length,
+      reason: "no-trigger",
+    });
     return;
   }
   const inboundHistory =
@@ -1698,7 +1799,17 @@ export async function handleMatrixInboundEvent(params: {
           scopeKey: historyScopeKey,
         })
       : previousBatchHistoryEntries;
-  const { media, promptImages } = resolveMatrixBatchMediaSelection({
+  if (isRoom) {
+    logMatrixRoomBufferAction({
+      accountId: account.accountId,
+      log,
+      action: "replay",
+      scopeKey: historyScopeKey,
+      eventId: event.eventId,
+      count: inboundHistory.length,
+    });
+  }
+  const mediaSelection = describeMatrixBatchMediaSelection({
     subject: {
       media: subjectContent.media,
       promptImages: subjectContent.promptImages,
@@ -1708,6 +1819,17 @@ export async function handleMatrixInboundEvent(params: {
       promptImages: entry.promptImages,
     })),
   });
+  const { media, promptImages } = mediaSelection.selection;
+  if (mediaSelection.source === "previous") {
+    const fallbackEvent = batchPreviousEvents?.[mediaSelection.previousIndex ?? -1];
+    log?.debug?.(
+      `[matrix:${account.accountId}] inbound media fallback subject=${event.eventId} source=${fallbackEvent?.eventId ?? "unknown"} media=${media.length} prompt_images=${promptImages.length}`,
+    );
+  } else if ((batchPreviousEvents?.length ?? 0) > 0 && mediaSelection.source === "subject") {
+    log?.debug?.(
+      `[matrix:${account.accountId}] inbound media subject=${event.eventId} media=${media.length} prompt_images=${promptImages.length}`,
+    );
+  }
   const conversationLabel = isDirectMessage
     ? (event.senderName ?? event.senderId)
     : (event.roomName ?? event.roomAlias ?? event.roomId);
@@ -1878,6 +2000,14 @@ export async function handleMatrixInboundEvent(params: {
   }
 
   if (isRoom) {
+    logMatrixRoomBufferAction({
+      accountId: account.accountId,
+      log,
+      action: "clear",
+      scopeKey: historyScopeKey,
+      eventId: event.eventId,
+      count: roomHistory.snapshot(historyScopeKey).length,
+    });
     roomHistory.clear(historyScopeKey);
   }
 

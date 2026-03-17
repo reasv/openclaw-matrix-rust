@@ -335,6 +335,7 @@ test("processNativeEvents batches consecutive same-sender events and dispatches 
   const roomHistory = createMatrixRoomHistoryBuffer(5);
   const dispatcher = new MatrixSessionDispatcher();
   const handled: Array<{ eventId: string; previous: string[] }> = [];
+  const logs: string[] = [];
   let nowMs = 0;
   const batcher = new MatrixInboundBatcher({
     holdMs: 500,
@@ -357,6 +358,12 @@ test("processNativeEvents batches consecutive same-sender events and dispatches 
     ],
     account,
     roomHistory,
+    log: {
+      info: () => undefined,
+      debug: (message) => {
+        logs.push(message);
+      },
+    },
     setStatus: () => undefined,
     client: {
       diagnostics: () => createDiagnostics(),
@@ -380,6 +387,12 @@ test("processNativeEvents batches consecutive same-sender events and dispatches 
     events: [],
     account,
     roomHistory,
+    log: {
+      info: () => undefined,
+      debug: (message) => {
+        logs.push(message);
+      },
+    },
     setStatus: () => undefined,
     client: {
       diagnostics: () => createDiagnostics(),
@@ -403,6 +416,13 @@ test("processNativeEvents batches consecutive same-sender events and dispatches 
       previous: ["$first"],
     },
   ]);
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] inbound batch dispatch session=agent:main:matrix:channel:!room:example\.org subject=\$second previous=1 events=\$first,\$second/.test(
+        message,
+      ),
+    ),
+  );
 });
 
 test("processNativeEvents flushes a sender batch before handling a different sender normally", async () => {

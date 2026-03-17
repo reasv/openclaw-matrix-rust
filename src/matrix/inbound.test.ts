@@ -1187,6 +1187,7 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
   const stopAfterRecord = createRecordStopError();
   const firstTimestamp = "2026-03-14T12:00:00.000Z";
   const recorded: Array<Record<string, unknown>> = [];
+  const logs: string[] = [];
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-inbound-no-dedupe-"));
   clearMatrixFlushedEventDedupes();
   setMatrixRustRuntime(
@@ -1221,6 +1222,11 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
     account,
     client,
     roomHistory,
+    log: {
+      debug: (message) => {
+        logs.push(message);
+      },
+    },
     event: createInboundEvent({
       eventId: "$event-1",
       body: "just chatting",
@@ -1253,6 +1259,11 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
       account,
       client,
       roomHistory,
+      log: {
+        debug: (message) => {
+          logs.push(message);
+        },
+      },
       event: createInboundEvent({
         eventId: "$event-2",
         senderId: "@bu:example.org",
@@ -1299,6 +1310,27 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
   assert.equal(retainedHistory[1]?.sender, "Bu (bu)");
   assert.equal(retainedHistory[1]?.body, "@bot what do you think?");
   assert.equal(typeof retainedHistory[1]?.timestamp, "number");
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] room buffer add scope=default:!room:example\.org event=\$event-1 count=1 source=subject/.test(
+        message,
+      ),
+    ),
+  );
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] room buffer hold scope=default:!room:example\.org event=\$event-1 count=1 reason=no-trigger/.test(
+        message,
+      ),
+    ),
+  );
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] room buffer replay scope=default:!room:example\.org event=\$event-2 count=1/.test(
+        message,
+      ),
+    ),
+  );
   assert.equal(
     await hasMatrixFlushedEvent({
       runtime: { state: { resolveStateDir: () => stateDir } } as any,
@@ -1321,6 +1353,7 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
 
 test("clears buffered room history after inbound session recording succeeds", async () => {
   const recorded: Array<Record<string, unknown>> = [];
+  const logs: string[] = [];
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-inbound-dedupe-"));
   clearMatrixFlushedEventDedupes();
   const runtime = createRuntimeForInboundTests({
@@ -1361,6 +1394,11 @@ test("clears buffered room history after inbound session recording succeeds", as
     account,
     client,
     roomHistory,
+    log: {
+      debug: (message) => {
+        logs.push(message);
+      },
+    },
     event: createInboundEvent({
       eventId: "$event-1",
       body: "just chatting",
@@ -1386,6 +1424,11 @@ test("clears buffered room history after inbound session recording succeeds", as
       account,
       client,
       roomHistory,
+      log: {
+        debug: (message) => {
+          logs.push(message);
+        },
+      },
       event: createInboundEvent({
         eventId: "$event-2",
         senderId: "@bu:example.org",
@@ -1416,6 +1459,13 @@ test("clears buffered room history after inbound session recording succeeds", as
       event: { roomId: "!room:example.org", eventId: "$event-2" },
     }),
     true,
+  );
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] room buffer clear scope=default:!room:example\.org event=\$event-2 count=2/.test(
+        message,
+      ),
+    ),
   );
 });
 
@@ -1689,6 +1739,7 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
 test("batched room context falls back to the last earlier media-bearing message when the subject has none", async () => {
   const stopAfterRecord = createRecordStopError();
   const recorded: Array<Record<string, unknown>> = [];
+  const logs: string[] = [];
   setMatrixRustRuntime(
     createRuntimeForInboundTests({
       onRecordInboundSession: async (payload) => {
@@ -1734,6 +1785,11 @@ test("batched room context falls back to the last earlier media-bearing message 
         },
       } as any,
       roomHistory,
+      log: {
+        debug: (message) => {
+          logs.push(message);
+        },
+      },
       event: createInboundEvent({
         eventId: "$subject-mention",
         senderId: "@alice:example.org",
@@ -1785,6 +1841,13 @@ test("batched room context falls back to the last earlier media-bearing message 
     ].join("\n"),
   );
   assert.equal(typeof inboundHistory[0]?.timestamp, "number");
+  assert.ok(
+    logs.some((message) =>
+      /\[matrix:default\] inbound media fallback subject=\$subject-mention source=\$earlier-image media=1 prompt_images=1/.test(
+        message,
+      ),
+    ),
+  );
 });
 
 test("batched room context can trigger from an earlier mention while preserving the final media subject", async () => {
