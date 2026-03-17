@@ -106,6 +106,18 @@ function createRuntimeForInboundTests(params: {
         formatAgentEnvelope: (ctx: { from: string; body: string }) => `${ctx.from}: ${ctx.body}`,
         finalizeInboundContext: (ctx: Record<string, unknown>) => ctx,
       },
+      media: {
+        saveMediaBuffer: async (
+          _buffer: Buffer,
+          contentType?: string,
+          _kind?: string,
+          _maxBytes?: number,
+          filename?: string,
+        ) => ({
+          path: path.join(os.tmpdir(), filename ?? "matrix-test-attachment"),
+          contentType,
+        }),
+      },
     },
   } as any;
 }
@@ -1555,6 +1567,92 @@ test("auto-downloads room attachments into the agent workspace and advertises re
   assert.ok(savedName);
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
   assert.equal(await fs.readFile(savedPath, "utf8"), "buffered-image");
+});
+
+test("auto-downloads direct-message attachments into the agent workspace when scope=all", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-dm-attach-"));
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    agents: {
+      defaults: {
+        workspace: workspaceDir,
+      },
+    },
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        autoDownloadAttachmentMaxBytes: -1,
+        autoDownloadAttachmentScope: "all",
+        dm: {
+          policy: "open",
+        },
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount(cfg.channels?.matrix as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    downloadMedia: ({ eventId }: { eventId: string }) => {
+      assert.equal(eventId, "$dm-image");
+      return {
+        roomId: "!dm:example.org",
+        eventId,
+        kind: "image",
+        filename: "dm-photo.png",
+        contentType: "image/png",
+        dataBase64: Buffer.from("dm-image").toString("base64"),
+      };
+    },
+  } as any;
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        roomId: "!dm:example.org",
+        eventId: "$dm-image",
+        chatType: "direct",
+        body: "look at this",
+        media: [
+          {
+            index: 0,
+            kind: "image",
+            filename: "dm-photo.png",
+            contentType: "image/png",
+          },
+        ],
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.match(
+    String(ctx.BodyForAgent ?? ""),
+    /^look at this\n\[Attachments: 1\]\n\[Attachment 1\] filename="dm-photo\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)"\n\[Matrix event\] room="!dm:example\.org" event="\$dm-image"$/,
+  );
+  const savedName = String(ctx.BodyForAgent ?? "").match(
+    /saved to="\.\/msg-attach\/([^"]+)"/,
+  )?.[1];
+  assert.ok(savedName);
+  const savedPath = path.join(workspaceDir, "msg-attach", savedName);
+  assert.equal(await fs.readFile(savedPath, "utf8"), "dm-image");
+  assert.equal(ctx.InboundHistory, undefined);
 });
 
 test("auto-downloads SillyTavern card images and advertises card detection in history", async () => {

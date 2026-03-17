@@ -17,6 +17,7 @@ import {
 } from "openclaw/plugin-sdk/matrix";
 import type {
   CoreConfig,
+  MatrixAttachmentAutoDownloadScope,
   MatrixInboundEvent,
   MatrixMessageSummary,
   ResolvedMatrixAccount,
@@ -104,6 +105,26 @@ function resolveMatrixAttachmentAutoDownloadMaxBytes(
     return null;
   }
   return Math.floor(raw);
+}
+
+function resolveMatrixAttachmentAutoDownloadScope(
+  account: ResolvedMatrixAccount,
+): MatrixAttachmentAutoDownloadScope {
+  return account.config.autoDownloadAttachmentScope ?? "rooms";
+}
+
+function shouldAutoDownloadMatrixAttachment(params: {
+  account: ResolvedMatrixAccount;
+  isRoom: boolean;
+}): boolean {
+  const scope = resolveMatrixAttachmentAutoDownloadScope(params.account);
+  if (scope === "all") {
+    return true;
+  }
+  if (scope === "dms") {
+    return !params.isRoom;
+  }
+  return params.isRoom;
 }
 
 function expandUserPath(input: string): string {
@@ -214,7 +235,7 @@ async function maybeAutoDownloadMatrixAttachmentToWorkspace(params: {
   filename?: string;
   contentType?: string;
 }): Promise<string | undefined> {
-  if (!params.isRoom) {
+  if (!shouldAutoDownloadMatrixAttachment({ account: params.account, isRoom: params.isRoom })) {
     return undefined;
   }
   const maxBytes = resolveMatrixAttachmentAutoDownloadMaxBytes(params.account);
@@ -1007,7 +1028,8 @@ async function resolveMatrixEventAttachmentContext(params: {
   prefetched: DownloadedMatrixAttachment[];
 }> {
   const shouldAttemptAutoDownload =
-    params.isRoom && resolveMatrixAttachmentAutoDownloadMaxBytes(params.account) != null;
+    shouldAutoDownloadMatrixAttachment({ account: params.account, isRoom: params.isRoom }) &&
+    resolveMatrixAttachmentAutoDownloadMaxBytes(params.account) != null;
   const attachmentEntries: Array<{
     index: number;
     filename?: string;

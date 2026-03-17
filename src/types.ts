@@ -18,6 +18,7 @@ export type MatrixChatType = "direct" | "channel" | "thread";
 export type MatrixMediaKind = "image" | "video" | "audio" | "file";
 export type MatrixLinkPreviewSourceKind = "synapse" | "fx_twitter";
 export type MatrixImageHandlingMode = "dual" | "multimodal-only" | "analysis-only";
+export type MatrixAttachmentAutoDownloadScope = "rooms" | "dms" | "all";
 
 export type MatrixRoomConfig = {
   enabled?: boolean;
@@ -50,6 +51,7 @@ export type MatrixChannelAccountConfig = {
   roomHistoryMaxEntries?: number;
   mediaMaxMb?: number;
   autoDownloadAttachmentMaxBytes?: number;
+  autoDownloadAttachmentScope?: MatrixAttachmentAutoDownloadScope;
   xPreviewViaFxTwitter?: boolean;
   imageHandlingMode?: MatrixImageHandlingMode;
   otherMediaPaths?: boolean;

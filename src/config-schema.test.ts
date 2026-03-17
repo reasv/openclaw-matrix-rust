@@ -25,11 +25,13 @@ test("accepts media handoff settings", () => {
     userId: "@bot:example.org",
     password: "secret",
     autoDownloadAttachmentMaxBytes: 1048576,
+    autoDownloadAttachmentScope: "all",
     imageHandlingMode: "multimodal-only",
     otherMediaPaths: false,
   });
 
   assert.equal(result.autoDownloadAttachmentMaxBytes, 1048576);
+  assert.equal(result.autoDownloadAttachmentScope, "all");
   assert.equal(result.imageHandlingMode, "multimodal-only");
   assert.equal(result.otherMediaPaths, false);
 });

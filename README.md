@@ -145,6 +145,7 @@ Example:
       "encryption": true,
       "threadReplies": "inbound",
       "autoDownloadAttachmentMaxBytes": 0,
+      "autoDownloadAttachmentScope": "rooms",
       "imageHandlingMode": "dual",
       "otherMediaPaths": true
     }
@@ -172,6 +173,7 @@ Useful optional settings include:
 - `threadReplies`
 - `xPreviewViaFxTwitter`
 - `autoDownloadAttachmentMaxBytes`
+- `autoDownloadAttachmentScope`
 - `imageHandlingMode`
 - `otherMediaPaths`
 
@@ -246,7 +248,7 @@ This section lists the behavior this connector actually implements today.
 - Media upload and download are implemented in Rust, with handoff to OpenClaw on the TS side.
 - Multiple Matrix media types are surfaced into the OpenClaw runtime.
 - Every inbound message now includes explicit attachment manifest text with filename and MIME type, including buffered history entries.
-- Room attachments can be auto-downloaded into the agent workspace under `./msg-attach/` when `autoDownloadAttachmentMaxBytes` is enabled.
+- Attachments can be auto-downloaded into the agent workspace under `./msg-attach/` when `autoDownloadAttachmentMaxBytes` is enabled.
 - Current-message and direct-parent reply images can be passed to multimodal agent runs as raw image blocks.
 - Image handoff is configurable with `imageHandlingMode`:
   - `dual`: raw image blocks plus normal `MediaPaths`
@@ -257,6 +259,10 @@ This section lists the behavior this connector actually implements today.
   - `0`: disabled
   - `-1`: unlimited
   - positive value: maximum attachment size in bytes
+- Auto-download target scope is controlled by `autoDownloadAttachmentScope`:
+  - `rooms`: room messages only (default)
+  - `dms`: direct messages only
+  - `all`: both rooms and direct messages
 
 ### Custom emoji and reactions
 

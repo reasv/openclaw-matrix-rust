@@ -50,6 +50,7 @@ const accountSchema = z.object({
   roomHistoryMaxEntries: z.number().int().min(0).optional(),
   mediaMaxMb: z.number().positive().optional(),
   autoDownloadAttachmentMaxBytes: z.number().int().min(-1).optional(),
+  autoDownloadAttachmentScope: z.enum(["rooms", "dms", "all"]).optional(),
   xPreviewViaFxTwitter: z.boolean().optional(),
   imageHandlingMode: z.enum(["dual", "multimodal-only", "analysis-only"]).optional(),
   otherMediaPaths: z.boolean().optional(),
