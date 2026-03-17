@@ -8,6 +8,7 @@ import {
   snapshotMatrixReplyProgress,
 } from "./matrix/reply-policy.js";
 import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
+import { MatrixInboundBatcher } from "./matrix/inbound-batcher.js";
 import type {
   CoreConfig,
   MatrixInboundEvent,
@@ -327,4 +328,137 @@ test("processNativeEvents keeps draining after one inbound event fails", async (
       ),
     ),
   );
+});
+
+test("processNativeEvents batches consecutive same-sender events and dispatches the last as subject", async () => {
+  const account = createAccount();
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
+  const handled: Array<{ eventId: string; previous: string[] }> = [];
+  let nowMs = 0;
+  const batcher = new MatrixInboundBatcher({
+    holdMs: 500,
+    now: () => nowMs,
+  });
+
+  await processNativeEvents({
+    events: [
+      {
+        type: "inbound",
+        event: createInboundEvent("$first"),
+      },
+      {
+        type: "inbound",
+        event: {
+          ...createInboundEvent("$second"),
+          body: "second",
+        },
+      },
+    ],
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    inboundBatcher: batcher,
+    resolveInboundRoute: () => createRoute("agent:main:matrix:channel:!room:example.org"),
+    handleInboundEvent: async ({ event, batchPreviousEvents }) => {
+      handled.push({
+        eventId: event.eventId,
+        previous: (batchPreviousEvents ?? []).map((entry) => entry.eventId),
+      });
+    },
+  });
+
+  assert.equal(handled.length, 0);
+
+  nowMs = 700;
+  await processNativeEvents({
+    events: [],
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    inboundBatcher: batcher,
+    resolveInboundRoute: () => createRoute("agent:main:matrix:channel:!room:example.org"),
+    handleInboundEvent: async ({ event, batchPreviousEvents }) => {
+      handled.push({
+        eventId: event.eventId,
+        previous: (batchPreviousEvents ?? []).map((entry) => entry.eventId),
+      });
+    },
+  });
+
+  assert.equal(await dispatcher.waitForIdle({ timeoutMs: 1_000 }), true);
+  assert.deepEqual(handled, [
+    {
+      eventId: "$second",
+      previous: ["$first"],
+    },
+  ]);
+});
+
+test("processNativeEvents flushes a sender batch before handling a different sender normally", async () => {
+  const account = createAccount();
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const dispatcher = new MatrixSessionDispatcher();
+  const handled: Array<{ eventId: string; previous: string[] }> = [];
+  let nowMs = 0;
+  const batcher = new MatrixInboundBatcher({
+    holdMs: 500,
+    now: () => nowMs,
+  });
+
+  await processNativeEvents({
+    events: [
+      {
+        type: "inbound",
+        event: createInboundEvent("$alice"),
+      },
+      {
+        type: "inbound",
+        event: {
+          ...createInboundEvent("$bob"),
+          senderId: "@bob:example.org",
+          senderName: "Bob",
+          body: "@bot hi",
+        },
+      },
+    ],
+    account,
+    roomHistory,
+    setStatus: () => undefined,
+    client: {
+      diagnostics: () => createDiagnostics(),
+    } as any,
+    cfg: {} as CoreConfig,
+    inboundDispatcher: dispatcher,
+    inboundBatcher: batcher,
+    resolveInboundRoute: () => createRoute("agent:main:matrix:channel:!room:example.org"),
+    handleInboundEvent: async ({ event, batchPreviousEvents }) => {
+      handled.push({
+        eventId: event.eventId,
+        previous: (batchPreviousEvents ?? []).map((entry) => entry.eventId),
+      });
+    },
+  });
+
+  assert.equal(await dispatcher.waitForIdle({ timeoutMs: 1_000 }), true);
+  assert.deepEqual(handled, [
+    {
+      eventId: "$alice",
+      previous: [],
+    },
+    {
+      eventId: "$bob",
+      previous: [],
+    },
+  ]);
 });

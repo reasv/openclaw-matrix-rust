@@ -16,6 +16,7 @@ import {
   extractMatrixCustomEmojiUsageFromFormattedBody,
   filterMatrixMediaForContext,
   handleMatrixInboundEvent,
+  resolveMatrixBatchMediaSelection,
   resolveMatrixInboundRoute,
   resolveMatrixReplyContext,
   resolveMatrixThreadContext,
@@ -139,6 +140,14 @@ function createClientForInboundTests() {
       textBlocks: [],
       media: [],
       sources: [],
+    }),
+    downloadMedia: ({ eventId }: { eventId: string }) => ({
+      roomId: "!room:example.org",
+      eventId,
+      kind: "image",
+      filename: "matrix-test.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("matrix-test-image").toString("base64"),
     }),
     recordCustomEmojiUsage: () => undefined,
   } as any;
@@ -456,6 +465,28 @@ test("labels group messages for BodyForAgent", () => {
       senderLabel,
     }),
     "Bu (bu): show me my commits",
+  );
+});
+
+test("resolveMatrixBatchMediaSelection falls back to the last earlier media-bearing event", () => {
+  const earlier = {
+    media: [{ path: "/tmp/earlier.png", contentType: "image/png" }],
+    promptImages: [{ type: "image" as const, data: "earlier", mimeType: "image/png" }],
+  };
+  const later = {
+    media: [{ path: "/tmp/later.png", contentType: "image/png" }],
+    promptImages: [{ type: "image" as const, data: "later", mimeType: "image/png" }],
+  };
+
+  assert.deepEqual(
+    resolveMatrixBatchMediaSelection({
+      subject: {
+        media: [],
+        promptImages: [],
+      },
+      previous: [earlier, later],
+    }),
+    later,
   );
 });
 
@@ -1653,6 +1684,199 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
   assert.equal(await fs.readFile(savedPath, "utf8"), "dm-image");
   assert.equal(ctx.InboundHistory, undefined);
+});
+
+test("batched room context falls back to the last earlier media-bearing message when the subject has none", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+  } as ResolvedMatrixAccount["config"]);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client: {
+        ...createClientForInboundTests(),
+        downloadMedia: ({ eventId }: { eventId: string }) => {
+          assert.equal(eventId, "$earlier-image");
+          return {
+            roomId: "!room:example.org",
+            eventId,
+            kind: "image",
+            filename: "earlier.png",
+            contentType: "image/png",
+            dataBase64: Buffer.from("earlier-image").toString("base64"),
+          };
+        },
+      } as any,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$subject-mention",
+        senderId: "@alice:example.org",
+        senderName: "Alice",
+        body: "@bot what is this?",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+      batchPreviousEvents: [
+        createInboundEvent({
+          eventId: "$earlier-image",
+          senderId: "@alice:example.org",
+          senderName: "Alice",
+          body: "earlier.png",
+          msgtype: "m.image",
+          media: [
+            {
+              index: 0,
+              kind: "image",
+              filename: "earlier.png",
+              contentType: "image/png",
+            },
+          ],
+        }),
+      ],
+    }),
+    stopAfterRecord,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  const inboundHistory = ctx.InboundHistory as Array<{
+    sender: string;
+    body: string;
+    timestamp?: number;
+  }>;
+  assert.equal(ctx.MessageSid, "$subject-mention");
+  assert.equal(ctx.MediaPath, "/tmp/earlier.png");
+  assert.deepEqual(ctx.MediaPaths, ["/tmp/earlier.png"]);
+  assert.equal(ctx.WasMentioned, true);
+  assert.equal(inboundHistory.length, 1);
+  assert.equal(inboundHistory[0]?.sender, "Alice (alice)");
+  assert.equal(
+    inboundHistory[0]?.body,
+    [
+      "earlier.png",
+      "[Attachments: 1]",
+      '[Attachment 1] filename="earlier.png" type="image/png"',
+    ].join("\n"),
+  );
+  assert.equal(typeof inboundHistory[0]?.timestamp, "number");
+});
+
+test("batched room context can trigger from an earlier mention while preserving the final media subject", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+  } as ResolvedMatrixAccount["config"]);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client: {
+        ...createClientForInboundTests(),
+        downloadMedia: ({ eventId }: { eventId: string }) => {
+          assert.equal(eventId, "$subject-image");
+          return {
+            roomId: "!room:example.org",
+            eventId,
+            kind: "image",
+            filename: "subject.png",
+            contentType: "image/png",
+            dataBase64: Buffer.from("subject-image").toString("base64"),
+          };
+        },
+      } as any,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$subject-image",
+        senderId: "@alice:example.org",
+        senderName: "Alice",
+        body: "subject.png",
+        msgtype: "m.image",
+        media: [
+          {
+            index: 0,
+            kind: "image",
+            filename: "subject.png",
+            contentType: "image/png",
+          },
+        ],
+      }),
+      batchPreviousEvents: [
+        createInboundEvent({
+          eventId: "$earlier-mention",
+          senderId: "@alice:example.org",
+          senderName: "Alice",
+          body: "@bot check this",
+          mentions: {
+            userIds: ["@bot:example.org"],
+          },
+        }),
+      ],
+    }),
+    stopAfterRecord,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  const inboundHistory = ctx.InboundHistory as Array<{
+    sender: string;
+    body: string;
+  }>;
+  assert.equal(ctx.MessageSid, "$subject-image");
+  assert.equal(ctx.WasMentioned, false);
+  assert.equal(ctx.MediaPath, "/tmp/subject.png");
+  assert.deepEqual(ctx.MediaPaths, ["/tmp/subject.png"]);
+  assert.equal(inboundHistory.length, 1);
+  assert.equal(inboundHistory[0]?.sender, "Alice (alice)");
+  assert.equal(inboundHistory[0]?.body, "@bot check this");
 });
 
 test("auto-downloads SillyTavern card images and advertises card detection in history", async () => {

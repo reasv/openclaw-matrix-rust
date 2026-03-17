@@ -38,10 +38,15 @@ import { recordMatrixLatestInboundEvent } from "./matrix/reply-policy.js";
 import { MatrixSessionDispatcher } from "./matrix/session-dispatcher.js";
 import { backfillMatrixRoomHistory } from "./matrix/startup-backfill.js";
 import { resolveMatrixRoomConfig } from "./matrix/rooms.js";
+import {
+  MatrixInboundBatcher,
+  type MatrixInboundBatchDelivery,
+} from "./matrix/inbound-batcher.js";
 
 const activeClients = new Map<string, MatrixNativeClient>();
 const activeRoomHistories = new Map<string, MatrixRoomHistoryBuffer>();
 const activeInboundDispatchers = new Map<string, MatrixSessionDispatcher>();
+const activeInboundBatchers = new Map<string, MatrixInboundBatcher>();
 
 const meta = {
   id: "matrix",
@@ -107,11 +112,23 @@ function getOrCreateMatrixInboundDispatcher(account: ResolvedMatrixAccount): Mat
   return next;
 }
 
+function getOrCreateMatrixInboundBatcher(account: ResolvedMatrixAccount): MatrixInboundBatcher {
+  const normalized = normalizeAccountId(account.accountId);
+  const existing = activeInboundBatchers.get(normalized);
+  if (existing) {
+    return existing;
+  }
+  const next = new MatrixInboundBatcher();
+  activeInboundBatchers.set(normalized, next);
+  return next;
+}
+
 function destroyMatrixClient(accountId: string): void {
   const normalized = normalizeAccountId(accountId);
   activeClients.delete(normalized);
   activeRoomHistories.delete(normalized);
   activeInboundDispatchers.delete(normalized);
+  activeInboundBatchers.delete(normalized);
 }
 
 function buildStatusFromDiagnostics(
@@ -184,6 +201,8 @@ export async function processNativeEvents(params: {
   cfg: CoreConfig;
   handleInboundEvent?: typeof handleMatrixInboundEvent;
   inboundDispatcher?: MatrixSessionDispatcher;
+  inboundBatcher?: MatrixInboundBatcher;
+  flushInboundBatcherAll?: boolean;
   resolveInboundRoute?: typeof resolveMatrixInboundRoute;
 }): Promise<void> {
   const {
@@ -196,28 +215,60 @@ export async function processNativeEvents(params: {
     cfg,
     handleInboundEvent = handleMatrixInboundEvent,
     inboundDispatcher,
+    inboundBatcher,
+    flushInboundBatcherAll = false,
     resolveInboundRoute = resolveMatrixInboundRoute,
   } = params;
+
+  const dispatchInbound = async (delivery: MatrixInboundBatchDelivery): Promise<void> => {
+    const subject = delivery.events[delivery.events.length - 1];
+    if (!subject) {
+      return;
+    }
+    const batchPreviousEvents =
+      delivery.events.length > 1 ? delivery.events.slice(0, -1) : undefined;
+    if (!inboundDispatcher) {
+      await handleInboundEvent({
+        cfg,
+        account,
+        client,
+        event: subject,
+        roomHistory,
+        log,
+        batchPreviousEvents,
+      });
+      return;
+    }
+
+    void inboundDispatcher
+      .enqueue(delivery.route.sessionKey, async () => {
+        await handleInboundEvent({
+          cfg,
+          account,
+          client,
+          event: subject,
+          roomHistory,
+          log,
+          batchPreviousEvents,
+        });
+      })
+      .catch((err) => {
+        log?.info?.(
+          `[matrix:${account.accountId}] native event failed (room=${subject.roomId} event=${subject.eventId}): ${String(err)}`,
+        );
+      });
+  };
+
+  if (inboundBatcher) {
+    const ready = flushInboundBatcherAll ? inboundBatcher.flushAll() : inboundBatcher.flushReady();
+    for (const delivery of ready) {
+      await dispatchInbound(delivery);
+    }
+  }
 
   for (const event of events) {
     try {
       if (event.type === "inbound") {
-        if (!inboundDispatcher) {
-          await handleInboundEvent({
-            cfg,
-            account,
-            client,
-            event: event.event,
-            roomHistory,
-            log,
-          });
-          continue;
-        }
-        const route = resolveInboundRoute({
-          cfg,
-          account,
-          event: event.event,
-        });
         const eventTimestampMs = Date.parse(event.event.timestamp);
         const scopeKey = buildMatrixHistoryScopeKey({
           accountId: account.accountId,
@@ -236,22 +287,21 @@ export async function processNativeEvents(params: {
             timestampMs: eventTimestampMs,
           });
         }
-        void inboundDispatcher
-          .enqueue(route.sessionKey, async () => {
-            await handleInboundEvent({
-              cfg,
-              account,
-              client,
-              event: event.event,
-              roomHistory,
-              log,
-            });
-          })
-          .catch((err) => {
-            log?.info?.(
-              `[matrix:${account.accountId}] native event failed (room=${event.event.roomId} event=${event.event.eventId}): ${String(err)}`,
-            );
-          });
+        const route = resolveInboundRoute({
+          cfg,
+          account,
+          event: event.event,
+        });
+        if (inboundBatcher) {
+          for (const delivery of inboundBatcher.push({ route, event: event.event })) {
+            await dispatchInbound(delivery);
+          }
+          continue;
+        }
+        await dispatchInbound({
+          route,
+          events: [event.event],
+        });
         continue;
       }
 
@@ -272,6 +322,13 @@ export async function processNativeEvents(params: {
       log?.info?.(
         `[matrix:${account.accountId}] native event failed (${eventDetails}): ${String(err)}`,
       );
+    }
+  }
+
+  if (inboundBatcher) {
+    const ready = flushInboundBatcherAll ? inboundBatcher.flushAll() : inboundBatcher.flushReady();
+    for (const delivery of ready) {
+      await dispatchInbound(delivery);
     }
   }
 }
@@ -529,6 +586,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
       const client = getOrCreateMatrixClient(account.accountId);
       const roomHistory = getOrCreateMatrixRoomHistory(account);
       const inboundDispatcher = getOrCreateMatrixInboundDispatcher(account);
+      const inboundBatcher = getOrCreateMatrixInboundBatcher(account);
       const diagnostics = client.start(
         resolveNativeConfig({
           account,
@@ -564,10 +622,23 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
             client,
             cfg: ctx.cfg as CoreConfig,
             inboundDispatcher,
+            inboundBatcher,
           });
           await sleep(250, ctx.abortSignal);
         }
       } finally {
+        await processNativeEvents({
+          events: [],
+          account,
+          roomHistory,
+          log: ctx.log,
+          setStatus: ctx.setStatus,
+          client,
+          cfg: ctx.cfg as CoreConfig,
+          inboundDispatcher,
+          inboundBatcher,
+          flushInboundBatcherAll: true,
+        });
         const drained = await inboundDispatcher.waitForIdle({ timeoutMs: 30_000 });
         if (!drained) {
           ctx.log?.info?.(

@@ -328,6 +328,29 @@ export function buildMatrixPromptImages(params: {
   return params.media.flatMap((item) => (item.promptImage ? [item.promptImage] : []));
 }
 
+export function resolveMatrixBatchMediaSelection(params: {
+  subject: {
+    media: SavedMatrixMedia[];
+    promptImages: PromptImageContent[];
+  };
+  previous: Array<{
+    media: SavedMatrixMedia[];
+    promptImages: PromptImageContent[];
+  }>;
+}): {
+  media: SavedMatrixMedia[];
+  promptImages: PromptImageContent[];
+} {
+  if (params.subject.media.length > 0 || params.subject.promptImages.length > 0) {
+    return params.subject;
+  }
+
+  const fallback = [...params.previous]
+    .reverse()
+    .find((entry) => entry.media.length > 0 || entry.promptImages.length > 0);
+  return fallback ?? params.subject;
+}
+
 function resolveBaseRouteSession(params: {
   runtime: any;
   baseRoute: {
@@ -593,6 +616,233 @@ export function buildMatrixInboundPresentation(params: {
       bodyText,
       senderLabel,
     }),
+  };
+}
+
+type ResolvedMatrixEventContentContext = {
+  senderName: string;
+  senderLabel: string;
+  baseBodyText: string;
+  eventTimestamp: number;
+  replyContext: Awaited<ReturnType<typeof resolveMatrixReplyContext>>;
+  attachmentTextBlocks: string[];
+  previewTextBlocks: string[];
+  historyBodyText: string;
+  media: SavedMatrixMedia[];
+  promptImages: PromptImageContent[];
+};
+
+type MatrixEventTriggerState = {
+  explicitMention: boolean;
+  resolvedCommandGate: ReturnType<typeof resolveControlCommandGate>;
+  shouldBypassMention: boolean;
+  effectiveWasMentioned: boolean;
+  shouldTrigger: boolean;
+};
+
+async function resolveMatrixEventContentContext(params: {
+  cfg: CoreConfig;
+  account: ResolvedMatrixAccount;
+  agentId: string;
+  isRoom: boolean;
+  client: MatrixNativeClient;
+  event: MatrixInboundEvent;
+  diagnosticsUserId?: string;
+  log?: { debug?: (message: string) => void };
+}): Promise<ResolvedMatrixEventContentContext> {
+  const senderName = params.event.senderName ?? params.event.senderId;
+  const senderLabel = resolveMatrixInboundSenderLabel({
+    senderName,
+    senderId: params.event.senderId,
+    senderUsername: resolveMatrixSenderUsername(params.event.senderId),
+  });
+  const attachmentContext = await resolveMatrixEventAttachmentContext({
+    cfg: params.cfg,
+    account: params.account,
+    agentId: params.agentId,
+    client: params.client,
+    event: params.event,
+    isRoom: params.isRoom,
+    log: params.log,
+  });
+  const baseBodyText = resolveMatrixReadableBody({
+    body: params.event.body,
+    formattedBody: params.event.formattedBody,
+    msgtype: params.event.msgtype,
+  });
+  let replySummary: MatrixMessageSummary | null = null;
+  if (params.event.replyToId) {
+    try {
+      replySummary = params.client.messageSummary({
+        roomId: params.event.roomId,
+        eventId: params.event.replyToId,
+      });
+    } catch (err) {
+      params.log?.debug?.(
+        `[matrix:${params.account.accountId}] failed to resolve reply target ${params.event.replyToId}: ${String(err)}`,
+      );
+    }
+  }
+  const replyContext = await resolveMatrixReplyContext({
+    cfg: params.cfg,
+    account: params.account,
+    agentId: params.agentId,
+    isRoom: params.isRoom,
+    client: params.client,
+    roomId: params.event.roomId,
+    replyToId: params.event.replyToId,
+    replySummary,
+    log: params.log,
+  });
+  const attachmentTextBlocks = buildMatrixAttachmentTextBlocks({
+    attachments: attachmentContext.attachmentEntries,
+  });
+  let previewTextBlocks: string[] = [];
+  let previewMedia: SavedMatrixMedia[] = [];
+  try {
+    const previewResult = params.client.resolveLinkPreviews({
+      bodyText: baseBodyText,
+      maxBytes: resolveMediaMaxBytes(params.account),
+      includeImages: true,
+      xPreviewViaFxTwitter: params.account.config.xPreviewViaFxTwitter === true,
+    });
+    previewTextBlocks = previewResult.textBlocks;
+    previewMedia = await savePreviewMedia({
+      account: params.account,
+      media: previewResult.media.map((item) => ({ ...item, kind: "image" })),
+    });
+  } catch (err) {
+    params.log?.debug?.(
+      `[matrix:${params.account.accountId}] preview resolution failed for ${params.event.eventId}: ${String(err)}`,
+    );
+  }
+  const historyBodyText = buildMatrixEnrichedBodyText({
+    baseBodyText,
+    attachmentTextBlocks,
+    replyToId: params.event.replyToId,
+    replyToBody: replyContext.replyToBody,
+    replyToSender: replyContext.replyToSender,
+    replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
+    replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
+    previewTextBlocks,
+  });
+  const collectedMedia: SavedMatrixMedia[] = [
+    ...(await saveInboundMedia({
+      account: params.account,
+      client: params.client,
+      event: params.event,
+      prefetched: attachmentContext.prefetched,
+    })),
+    ...replyContext.replyAttachmentMedia,
+    ...replyContext.replyPreviewMedia,
+    ...previewMedia,
+  ];
+
+  return {
+    senderName,
+    senderLabel,
+    baseBodyText,
+    eventTimestamp: Date.parse(params.event.timestamp),
+    replyContext,
+    attachmentTextBlocks,
+    previewTextBlocks,
+    historyBodyText,
+    media: filterMatrixMediaForContext({
+      account: params.account,
+      media: collectedMedia,
+    }),
+    promptImages: buildMatrixPromptImages({
+      account: params.account,
+      media: collectedMedia,
+    }),
+  };
+}
+
+function resolveMatrixEventTriggerState(params: {
+  cfg: CoreConfig;
+  runtime: any;
+  event: MatrixInboundEvent;
+  baseBodyText: string;
+  diagnosticsUserId?: string;
+  isDirectMessage: boolean;
+  requireMention: boolean;
+  allowTextCommands: boolean;
+  useAccessGroups: boolean;
+  effectiveAllowFrom: string[];
+  effectiveGroupAllowFrom: string[];
+  groupAllowConfigured: boolean;
+  roomUsers: string[];
+}): MatrixEventTriggerState {
+  const explicitMention = detectExplicitMention(params.event, params.diagnosticsUserId ?? "");
+  const senderAllowedForCommands = resolveMatrixAllowListMatches({
+    allowList: params.effectiveAllowFrom,
+    userId: params.event.senderId,
+  });
+  const senderAllowedForGroup = params.groupAllowConfigured
+    ? resolveMatrixAllowListMatches({
+        allowList: params.effectiveGroupAllowFrom,
+        userId: params.event.senderId,
+      })
+    : false;
+  const senderAllowedForRoomUsers =
+    params.roomUsers.length > 0
+      ? resolveMatrixAllowListMatches({
+          allowList: normalizeMatrixAllowList(params.roomUsers),
+          userId: params.event.senderId,
+        })
+      : false;
+  const hasControlCommandInMessage = params.runtime.channel.text.hasControlCommand(
+    params.baseBodyText,
+    params.cfg,
+  );
+  const resolvedCommandGate = resolveControlCommandGate({
+    useAccessGroups: params.useAccessGroups,
+    authorizers: [
+      { configured: params.effectiveAllowFrom.length > 0, allowed: senderAllowedForCommands },
+      { configured: params.roomUsers.length > 0, allowed: senderAllowedForRoomUsers },
+      { configured: params.groupAllowConfigured, allowed: senderAllowedForGroup },
+    ],
+    allowTextCommands: params.allowTextCommands,
+    hasControlCommand: hasControlCommandInMessage,
+  });
+  const wasMentioned = params.isDirectMessage ? true : explicitMention;
+  const shouldBypassMention =
+    params.allowTextCommands &&
+    !params.isDirectMessage &&
+    params.requireMention &&
+    !wasMentioned &&
+    !explicitMention &&
+    resolvedCommandGate.commandAuthorized &&
+    hasControlCommandInMessage;
+  const effectiveWasMentioned = wasMentioned || shouldBypassMention;
+  const shouldTrigger =
+    !resolvedCommandGate.shouldBlock &&
+    (params.isDirectMessage || !params.requireMention || effectiveWasMentioned);
+
+  return {
+    explicitMention,
+    resolvedCommandGate,
+    shouldBypassMention,
+    effectiveWasMentioned,
+    shouldTrigger,
+  };
+}
+
+function buildMatrixHistoryEntry(params: {
+  event: MatrixInboundEvent;
+  senderLabel: string;
+  historyBodyText: string;
+  eventTimestamp: number;
+}): MatrixBufferedHistoryEntry | null {
+  const body = params.historyBodyText.trim();
+  if (!body) {
+    return null;
+  }
+  return {
+    eventId: params.event.eventId,
+    sender: params.senderLabel,
+    body,
+    timestamp: Number.isFinite(params.eventTimestamp) ? params.eventTimestamp : undefined,
   };
 }
 
@@ -1195,8 +1445,9 @@ export async function handleMatrixInboundEvent(params: {
   roomHistory: MatrixRoomHistoryBuffer;
   log?: { info?: (message: string) => void; debug?: (message: string) => void };
   skipStartupGrace?: boolean;
+  batchPreviousEvents?: MatrixInboundEvent[];
 }): Promise<void> {
-  const { cfg, account, client, event, roomHistory, log, skipStartupGrace } = params;
+  const { cfg, account, client, event, roomHistory, log, skipStartupGrace, batchPreviousEvents } = params;
   const runtime = getMatrixRustRuntime() as any;
   const diagnostics = client.diagnostics();
   if (event.senderId === diagnostics.userId) {
@@ -1250,85 +1501,7 @@ export async function handleMatrixInboundEvent(params: {
     channel: "matrix",
     accountId: account.accountId,
   });
-  const explicitMention = detectExplicitMention(event, diagnostics.userId);
   const senderName = event.senderName ?? event.senderId;
-  const senderLabel = resolveMatrixInboundSenderLabel({
-    senderName,
-    senderId: event.senderId,
-    senderUsername: resolveMatrixSenderUsername(event.senderId),
-  });
-  const attachmentContext = await resolveMatrixEventAttachmentContext({
-    cfg,
-    account,
-    agentId: route.agentId,
-    client,
-    event,
-    isRoom,
-    log,
-  });
-  const baseBodyText = resolveMatrixReadableBody({
-    body: event.body,
-    formattedBody: event.formattedBody,
-    msgtype: event.msgtype,
-  });
-  let replySummary: MatrixMessageSummary | null = null;
-  if (event.replyToId) {
-    try {
-      replySummary = client.messageSummary({
-        roomId: event.roomId,
-        eventId: event.replyToId,
-      });
-    } catch (err) {
-      log?.debug?.(
-        `[matrix:${account.accountId}] failed to resolve reply target ${event.replyToId}: ${String(err)}`,
-      );
-    }
-  }
-  const replyContext = await resolveMatrixReplyContext({
-    cfg,
-    account,
-    agentId: route.agentId,
-    isRoom,
-    client,
-    roomId: event.roomId,
-    replyToId: event.replyToId,
-    replySummary,
-    log,
-  });
-  const replyToBody = replyContext.replyToBody;
-  const replyToSender = replyContext.replyToSender;
-  const attachmentTextBlocks = buildMatrixAttachmentTextBlocks({
-    attachments: attachmentContext.attachmentEntries,
-  });
-  let previewTextBlocks: string[] = [];
-  let previewMedia: SavedMatrixMedia[] = [];
-  try {
-    const previewResult = client.resolveLinkPreviews({
-      bodyText: baseBodyText,
-      maxBytes: resolveMediaMaxBytes(account),
-      includeImages: true,
-      xPreviewViaFxTwitter: account.config.xPreviewViaFxTwitter === true,
-    });
-    previewTextBlocks = previewResult.textBlocks;
-    previewMedia = await savePreviewMedia({
-      account,
-      media: previewResult.media.map((item) => ({ ...item, kind: "image" })),
-    });
-  } catch (err) {
-    log?.debug?.(
-      `[matrix:${account.accountId}] preview resolution failed for ${event.eventId}: ${String(err)}`,
-    );
-  }
-  const historyBodyText = buildMatrixEnrichedBodyText({
-    baseBodyText,
-    attachmentTextBlocks,
-    replyToId: event.replyToId,
-    replyToBody,
-    replyToSender,
-    replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
-    replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
-    previewTextBlocks,
-  });
   const { access, effectiveAllowFrom, effectiveGroupAllowFrom, groupAllowConfigured } =
     await resolveMatrixAccessState({
       isDirectMessage,
@@ -1388,41 +1561,96 @@ export async function handleMatrixInboundEvent(params: {
     }
   }
 
-  const wasMentioned = isDirectMessage ? true : explicitMention;
   const allowTextCommands = runtime.channel.commands.shouldHandleTextCommands({
     cfg,
     surface: "matrix",
   });
   const useAccessGroups = cfg.commands?.useAccessGroups !== false;
-  const senderAllowedForCommands = resolveMatrixAllowListMatches({
-    allowList: effectiveAllowFrom,
-    userId: event.senderId,
+  const requireMention = shouldRequireMention(roomConfig, isDirectMessage);
+  const subjectContent = await resolveMatrixEventContentContext({
+    cfg,
+    account,
+    agentId: route.agentId,
+    isRoom,
+    client,
+    event,
+    diagnosticsUserId: diagnostics.userId,
+    log,
   });
-  const senderAllowedForGroup = groupAllowConfigured
-    ? resolveMatrixAllowListMatches({
-        allowList: effectiveGroupAllowFrom,
-        userId: event.senderId,
-      })
-    : false;
-  const senderAllowedForRoomUsers =
-    isRoom && roomUsers.length > 0
-      ? resolveMatrixAllowListMatches({
-          allowList: normalizeMatrixAllowList(roomUsers),
-          userId: event.senderId,
-        })
-      : false;
-  const hasControlCommandInMessage = runtime.channel.text.hasControlCommand(baseBodyText, cfg);
-  const resolvedCommandGate = resolveControlCommandGate({
-    useAccessGroups,
-    authorizers: [
-      { configured: effectiveAllowFrom.length > 0, allowed: senderAllowedForCommands },
-      { configured: roomUsers.length > 0, allowed: senderAllowedForRoomUsers },
-      { configured: groupAllowConfigured, allowed: senderAllowedForGroup },
-    ],
+  const subjectTriggerState = resolveMatrixEventTriggerState({
+    cfg,
+    runtime,
+    event,
+    baseBodyText: subjectContent.baseBodyText,
+    diagnosticsUserId: diagnostics.userId,
+    isDirectMessage,
+    requireMention,
     allowTextCommands,
-    hasControlCommand: hasControlCommandInMessage,
+    useAccessGroups,
+    effectiveAllowFrom,
+    effectiveGroupAllowFrom,
+    groupAllowConfigured,
+    roomUsers,
   });
-  if (isRoom && resolvedCommandGate.shouldBlock) {
+  const previousBatchContexts: Array<
+    ResolvedMatrixEventContentContext & {
+      event: MatrixInboundEvent;
+      historyEntry: MatrixBufferedHistoryEntry | null;
+      triggerState: MatrixEventTriggerState;
+    }
+  > = [];
+  for (const previousEvent of batchPreviousEvents ?? []) {
+    const previousContent = await resolveMatrixEventContentContext({
+      cfg,
+      account,
+      agentId: route.agentId,
+      isRoom,
+      client,
+      event: previousEvent,
+      diagnosticsUserId: diagnostics.userId,
+      log,
+    });
+    await recordInboundEmojiUsage({ client, event: previousEvent });
+    previousBatchContexts.push({
+      ...previousContent,
+      event: previousEvent,
+      historyEntry: buildMatrixHistoryEntry({
+        event: previousEvent,
+        senderLabel: previousContent.senderLabel,
+        historyBodyText: previousContent.historyBodyText,
+        eventTimestamp: previousContent.eventTimestamp,
+      }),
+      triggerState: resolveMatrixEventTriggerState({
+        cfg,
+        runtime,
+        event: previousEvent,
+        baseBodyText: previousContent.baseBodyText,
+        diagnosticsUserId: diagnostics.userId,
+        isDirectMessage,
+        requireMention,
+        allowTextCommands,
+        useAccessGroups,
+        effectiveAllowFrom,
+        effectiveGroupAllowFrom,
+        groupAllowConfigured,
+        roomUsers,
+      }),
+    });
+  }
+  const previousBatchHistoryEntries = previousBatchContexts.flatMap((entry) =>
+    entry.historyEntry ? [entry.historyEntry] : [],
+  );
+  if (isRoom && subjectTriggerState.resolvedCommandGate.shouldBlock) {
+    for (const entry of previousBatchHistoryEntries) {
+      roomHistory.add(
+        buildMatrixHistoryScopeKey({
+          accountId: account.accountId,
+          roomId: event.roomId,
+          threadRootId: event.threadRootId,
+        }),
+        entry,
+      );
+    }
     logInboundDrop({
       log: (message: string) => log?.info?.(message),
       channel: "matrix",
@@ -1431,16 +1659,7 @@ export async function handleMatrixInboundEvent(params: {
     });
     return;
   }
-  const requireMention = shouldRequireMention(roomConfig, isDirectMessage);
-  const shouldBypassMention =
-    allowTextCommands &&
-    isRoom &&
-    requireMention &&
-    !wasMentioned &&
-    !explicitMention &&
-    resolvedCommandGate.commandAuthorized &&
-    hasControlCommandInMessage;
-  const effectiveWasMentioned = wasMentioned || shouldBypassMention;
+
   const historyScopeKey = buildMatrixHistoryScopeKey({
     accountId: account.accountId,
     roomId: event.roomId,
@@ -1453,16 +1672,23 @@ export async function handleMatrixInboundEvent(params: {
       timestampMs: eventTimestamp,
     });
   }
+  const subjectHistoryEntry = buildMatrixHistoryEntry({
+    event,
+    senderLabel: subjectContent.senderLabel,
+    historyBodyText: subjectContent.historyBodyText,
+    eventTimestamp: subjectContent.eventTimestamp,
+  });
+  const batchTriggered = previousBatchContexts.some((entry) => entry.triggerState.shouldTrigger);
   if (isRoom) {
-    roomHistory.add(historyScopeKey, {
-      eventId: event.eventId,
-      sender: senderLabel,
-      body: historyBodyText,
-      timestamp: Number.isFinite(eventTimestamp) ? eventTimestamp : undefined,
-    });
+    for (const entry of previousBatchHistoryEntries) {
+      roomHistory.add(historyScopeKey, entry);
+    }
+    if (subjectHistoryEntry) {
+      roomHistory.add(historyScopeKey, subjectHistoryEntry);
+    }
   }
   await recordInboundEmojiUsage({ client, event });
-  if (isRoom && requireMention && !effectiveWasMentioned) {
+  if (isRoom && !subjectTriggerState.shouldTrigger && !batchTriggered) {
     return;
   }
   const inboundHistory =
@@ -1471,26 +1697,16 @@ export async function handleMatrixInboundEvent(params: {
           roomHistory,
           scopeKey: historyScopeKey,
         })
-      : [];
-
-  const collectedMedia: SavedMatrixMedia[] = [
-    ...(await saveInboundMedia({
-      account,
-      client,
-      event,
-      prefetched: attachmentContext.prefetched,
+      : previousBatchHistoryEntries;
+  const { media, promptImages } = resolveMatrixBatchMediaSelection({
+    subject: {
+      media: subjectContent.media,
+      promptImages: subjectContent.promptImages,
+    },
+    previous: previousBatchContexts.map((entry) => ({
+      media: entry.media,
+      promptImages: entry.promptImages,
     })),
-    ...replyContext.replyAttachmentMedia,
-    ...replyContext.replyPreviewMedia,
-    ...previewMedia,
-  ];
-  const media = filterMatrixMediaForContext({
-    account,
-    media: collectedMedia,
-  });
-  const promptImages = buildMatrixPromptImages({
-    account,
-    media: collectedMedia,
   });
   const conversationLabel = isDirectMessage
     ? (event.senderName ?? event.senderId)
@@ -1520,19 +1736,18 @@ export async function handleMatrixInboundEvent(params: {
     event,
     isDirectMessage,
     conversationLabel,
-    attachmentTextBlocks,
-    replyToBody,
-    replyToSender,
-    replyAttachmentTextBlocks: replyContext.replyAttachmentTextBlocks,
-    replyPreviewTextBlocks: replyContext.replyPreviewTextBlocks,
-    previewTextBlocks,
-    eventTimestamp,
+    attachmentTextBlocks: subjectContent.attachmentTextBlocks,
+    replyToBody: subjectContent.replyContext.replyToBody,
+    replyToSender: subjectContent.replyContext.replyToSender,
+    replyAttachmentTextBlocks: subjectContent.replyContext.replyAttachmentTextBlocks,
+    replyPreviewTextBlocks: subjectContent.replyContext.replyPreviewTextBlocks,
+    previewTextBlocks: subjectContent.previewTextBlocks,
+    eventTimestamp: subjectContent.eventTimestamp,
     previousTimestamp,
     envelopeOptions,
     formatInboundEnvelope: runtime.channel.reply.formatInboundEnvelope,
   });
   const senderUsername = presentation.senderUsername;
-  const bodyText = presentation.bodyText;
   const body = presentation.body;
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
@@ -1545,39 +1760,54 @@ export async function handleMatrixInboundEvent(params: {
             timestamp: entry.timestamp,
           }))
         : undefined,
-    RawBody: baseBodyText,
-    CommandBody: baseBodyText,
+    RawBody: subjectContent.baseBodyText,
+    CommandBody: subjectContent.baseBodyText,
     From: isDirectMessage ? `matrix:${event.senderId}` : `matrix:channel:${event.roomId}`,
     To: `room:${event.roomId}`,
     SessionKey: route.sessionKey,
     AccountId: route.accountId,
     ChatType: threadTarget ? "thread" : isDirectMessage ? "direct" : "channel",
     ConversationLabel: conversationLabel,
-    SenderName: senderName,
+    SenderName: subjectContent.senderName,
     SenderId: event.senderId,
     SenderUsername: senderUsername,
-    WasMentioned: isDirectMessage ? undefined : effectiveWasMentioned,
+    WasMentioned: isDirectMessage ? undefined : subjectTriggerState.effectiveWasMentioned,
     Provider: "matrix",
     Surface: "matrix",
     MessageSid: event.eventId,
     ReplyToId: threadTarget ? undefined : event.replyToId,
-    ReplyToBody: threadTarget ? undefined : replyToBody,
-    ReplyToSender: threadTarget ? undefined : replyToSender,
+    ReplyToBody: threadTarget ? undefined : subjectContent.replyContext.replyToBody,
+    ReplyToSender: threadTarget ? undefined : subjectContent.replyContext.replyToSender,
     ReplyLinkPreviews:
-      !threadTarget && replyContext.replyPreviewTextBlocks.length > 0
-        ? replyContext.replyPreviewTextBlocks
+      !threadTarget && subjectContent.replyContext.replyPreviewTextBlocks.length > 0
+        ? subjectContent.replyContext.replyPreviewTextBlocks
         : undefined,
     ReplyMediaPaths:
-      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
-        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map((item) => item.path)
+      !threadTarget &&
+      (subjectContent.replyContext.replyAttachmentMedia.length > 0 ||
+        subjectContent.replyContext.replyPreviewMedia.length > 0)
+        ? [
+            ...subjectContent.replyContext.replyAttachmentMedia,
+            ...subjectContent.replyContext.replyPreviewMedia,
+          ].map((item) => item.path)
         : undefined,
     ReplyMediaUrls:
-      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
-        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map((item) => item.path)
+      !threadTarget &&
+      (subjectContent.replyContext.replyAttachmentMedia.length > 0 ||
+        subjectContent.replyContext.replyPreviewMedia.length > 0)
+        ? [
+            ...subjectContent.replyContext.replyAttachmentMedia,
+            ...subjectContent.replyContext.replyPreviewMedia,
+          ].map((item) => item.path)
         : undefined,
     ReplyMediaTypes:
-      !threadTarget && (replyContext.replyAttachmentMedia.length > 0 || replyContext.replyPreviewMedia.length > 0)
-        ? [...replyContext.replyAttachmentMedia, ...replyContext.replyPreviewMedia].map(
+      !threadTarget &&
+      (subjectContent.replyContext.replyAttachmentMedia.length > 0 ||
+        subjectContent.replyContext.replyPreviewMedia.length > 0)
+        ? [
+            ...subjectContent.replyContext.replyAttachmentMedia,
+            ...subjectContent.replyContext.replyPreviewMedia,
+          ].map(
             (item) => item.contentType ?? "",
           )
         : undefined,
@@ -1592,11 +1822,11 @@ export async function handleMatrixInboundEvent(params: {
     GroupSubject: isDirectMessage ? undefined : conversationLabel,
     GroupChannel: isDirectMessage ? undefined : (event.roomAlias ?? event.roomId),
     GroupSystemPrompt: isDirectMessage ? undefined : roomConfig?.systemPrompt?.trim() || undefined,
-    CommandAuthorized: resolvedCommandGate.commandAuthorized,
+    CommandAuthorized: subjectTriggerState.resolvedCommandGate.commandAuthorized,
     CommandSource: "text",
     OriginatingChannel: "matrix",
     OriginatingTo: `room:${event.roomId}`,
-    LinkPreviews: previewTextBlocks.length > 0 ? previewTextBlocks : undefined,
+    LinkPreviews: subjectContent.previewTextBlocks.length > 0 ? subjectContent.previewTextBlocks : undefined,
     ThreadStarterBody: threadContext.threadStarterBody,
     ThreadLabel: threadContext.threadLabel,
     ParentSessionKey: threadContext.parentSessionKey,
@@ -1620,13 +1850,21 @@ export async function handleMatrixInboundEvent(params: {
     await markMatrixEventsFlushed({
       runtime,
       accountId: account.accountId,
-      events: [
-        { roomId: event.roomId, eventId: event.eventId },
-        ...inboundHistory.map((entry) => ({
-          roomId: event.roomId,
-          eventId: entry.eventId,
-        })),
-      ],
+      events: Array.from(
+        new Map(
+          [
+            { roomId: event.roomId, eventId: event.eventId },
+            ...(batchPreviousEvents ?? []).map((entry) => ({
+              roomId: entry.roomId,
+              eventId: entry.eventId,
+            })),
+            ...inboundHistory.map((entry) => ({
+              roomId: event.roomId,
+              eventId: entry.eventId,
+            })),
+          ].map((entry) => [`${entry.roomId}\u0000${entry.eventId}`, entry] as const),
+        ).values(),
+      ),
       onDiskError: (err) => {
         log?.info?.(
           `[matrix:${account.accountId}] flushed-event dedupe fallback: ${String(err)}`,
@@ -1659,8 +1897,8 @@ export async function handleMatrixInboundEvent(params: {
         isMentionableGroup: isRoom,
         requireMention,
         canDetectMention,
-        effectiveWasMentioned,
-        shouldBypassMention,
+        effectiveWasMentioned: subjectTriggerState.effectiveWasMentioned,
+        shouldBypassMention: subjectTriggerState.shouldBypassMention,
       }),
   );
   if (shouldAckReaction) {
@@ -1764,7 +2002,7 @@ export async function handleMatrixInboundEvent(params: {
     `[matrix:${account.accountId}] delivered ${counts.final} reply${counts.final === 1 ? "" : "ies"} to room:${event.roomId}`,
   );
   runtime.system.enqueueSystemEvent?.(
-    `Matrix message from ${senderName}: ${baseBodyText.replace(/\s+/g, " ").slice(0, 160)}`,
+    `Matrix message from ${subjectContent.senderName}: ${subjectContent.baseBodyText.replace(/\s+/g, " ").slice(0, 160)}`,
     {
       sessionKey: route.sessionKey,
       contextKey: `matrix:message:${event.roomId}:${event.eventId || "unknown"}`,
