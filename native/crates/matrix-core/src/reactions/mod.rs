@@ -21,10 +21,18 @@ pub fn resolve_reaction_key_info(
         .map(|shortcode| emoji::resolve_for_shortcode(config, shortcode, room_id, now_ms))
         .transpose()?
         .flatten();
+    let resolved_unicode = if resolved_custom.is_none() {
+        normalized_shortcode
+            .as_deref()
+            .and_then(emoji::resolve_unicode_for_shortcode)
+    } else {
+        None
+    };
 
     let reaction_raw = resolved_custom
         .as_ref()
         .map(|entry| entry.mxc_url.clone())
+        .or_else(|| resolved_unicode.map(str::to_string))
         .unwrap_or_else(|| trimmed.to_string());
     let shortcode = resolved_custom
         .as_ref()
@@ -206,6 +214,19 @@ mod tests {
             resolve_reaction_key_info(&config, ":blobwave:", Some("!room:example"), 200).unwrap();
         assert_eq!(reaction.kind, crate::api::MatrixReactionKeyKind::Custom);
         assert_eq!(reaction.normalized, "mxc://example/blobwave");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_unicode_shortcodes_when_custom_catalog_misses() {
+        let root = unique_root();
+        fs::create_dir_all(&root).unwrap();
+        let config = sample_config(&root);
+        let reaction = resolve_reaction_key_info(&config, ":joy:", None, 0).unwrap();
+        assert_eq!(reaction.kind, crate::api::MatrixReactionKeyKind::Unicode);
+        assert_eq!(reaction.raw, "😂");
+        assert_eq!(reaction.normalized, "😂");
+        assert_eq!(reaction.shortcode.as_deref(), Some(":joy:"));
         let _ = fs::remove_dir_all(root);
     }
 

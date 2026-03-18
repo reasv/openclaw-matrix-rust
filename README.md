@@ -293,6 +293,7 @@ This behavior exists to make normal Matrix client usage "just work" more often w
 - Inbound formatted HTML is scanned for Matrix custom emoji.
 - Custom emoji observations are persisted in an on-disk catalog with usage statistics.
 - Outbound `:shortcode:` text is resolved to the best known Matrix custom emoji mapping.
+- If no recorded custom emoji matches, outbound shortcode text and shortcode reactions fall back to standard unicode emoji shortcodes such as `:joy:` and `:eyes:`.
 - Reaction keys are normalized consistently.
 - Reactions can be added, removed, and listed.
 - Shortcode-backed custom emoji reactions are supported.

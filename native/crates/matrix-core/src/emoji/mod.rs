@@ -144,6 +144,12 @@ pub fn resolve_for_shortcode(
     Ok(resolved)
 }
 
+pub fn resolve_unicode_for_shortcode(shortcode: &str) -> Option<&'static str> {
+    let normalized = normalize_shortcode(shortcode)?;
+    let bare = normalized.strip_prefix(':')?.strip_suffix(':')?;
+    emojis::get_by_shortcode(bare).map(|emoji| emoji.as_str())
+}
+
 #[allow(dead_code)]
 pub fn extract_usage_from_formatted_html(formatted_html: &str) -> Vec<MatrixCustomEmojiRef> {
     let img_tag_pattern = Regex::new("(?is)<img\\b[^>]*>").expect("valid img regex");
@@ -206,18 +212,22 @@ pub fn render_text_with_custom_emoji(
 
     for matched in shortcode_pattern.find_iter(body) {
         let shortcode = matched.as_str();
-        let Some(entry) = resolve_for_shortcode(config, shortcode, room_id, now_ms)? else {
-            continue;
-        };
         rendered.push_str(&escape_html(&body[last_index..matched.start()]));
-        rendered.push_str(&format!(
-            "<img data-mx-emoticon src=\"{}\" alt=\"{}\" title=\"{}\" height=\"32\" />",
-            escape_html(&entry.mxc_url),
-            escape_html(&entry.shortcode),
-            escape_html(&entry.shortcode),
-        ));
+        if let Some(entry) = resolve_for_shortcode(config, shortcode, room_id, now_ms)? {
+            rendered.push_str(&format!(
+                "<img data-mx-emoticon src=\"{}\" alt=\"{}\" title=\"{}\" height=\"32\" />",
+                escape_html(&entry.mxc_url),
+                escape_html(&entry.shortcode),
+                escape_html(&entry.shortcode),
+            ));
+            replaced = true;
+        } else if let Some(unicode) = resolve_unicode_for_shortcode(shortcode) {
+            rendered.push_str(unicode);
+            replaced = true;
+        } else {
+            rendered.push_str(&escape_html(shortcode));
+        }
         last_index = matched.end();
-        replaced = true;
     }
 
     if !replaced {
@@ -342,6 +352,7 @@ mod tests {
     use super::{
         extract_usage_from_formatted_html, list_entries_ranked, list_shortcodes,
         normalize_shortcode, record_usage, render_text_with_custom_emoji, resolve_for_shortcode,
+        resolve_unicode_for_shortcode,
     };
 
     fn unique_root() -> PathBuf {
@@ -529,6 +540,32 @@ mod tests {
                 .unwrap();
         assert!(html.contains("data-mx-emoticon"));
         assert!(html.contains("mxc://example/blobwave"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_unicode_shortcode_fallbacks() {
+        assert_eq!(resolve_unicode_for_shortcode(":joy:"), Some("😂"));
+        assert_eq!(resolve_unicode_for_shortcode("eyes"), Some("👀"));
+        assert_eq!(resolve_unicode_for_shortcode(":not_a_real_emoji:"), None);
+    }
+
+    #[test]
+    fn renders_unicode_shortcodes_without_custom_catalog_entries() {
+        let root = unique_root();
+        fs::create_dir_all(&root).unwrap();
+        let config = sample_config(&root);
+
+        let html = render_text_with_custom_emoji(
+            &config,
+            "hello :joy: :unknown:",
+            Some("!room:example"),
+            200,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(html, "hello 😂 :unknown:");
 
         fs::remove_dir_all(root).unwrap();
     }
