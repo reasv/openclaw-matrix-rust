@@ -235,10 +235,34 @@ This section lists the behavior this connector actually implements today.
 
 - Mention-gated behavior for group rooms.
 - Buffered room history before a triggering mention, so the first routed message can carry recent context.
+- Short inbound batching for contiguous same-sender bursts, so common Matrix client patterns like `text -> image`, `image -> text`, or DM caption splits trigger the agent once instead of multiple times.
 - Direct-message and group-room policy handling through OpenClaw config.
 - Reply and thread-aware routing, including per-room `threadReplies` overrides.
 - Startup grace filtering so stale sync events do not immediately trigger bot replies on boot.
 - Typing-backed reply dispatch and reaction acknowledgements in the OpenClaw flow.
+
+#### Inbound batching
+
+Matrix clients frequently split what the user thinks of as one action into multiple adjacent events. Common examples include:
+
+- an image followed by a text message addressing the bot
+- a text message followed by an image upload
+- DM caption-like flows that arrive as separate events
+
+The connector handles this with a short debounce window on inbound events from the same sender in the same resolved session.
+
+- Messages are not merged or rewritten.
+- The last event in the burst becomes the subject message that the bot replies to.
+- Earlier events in that burst are preserved and injected as prior context, the same way buffered room history is preserved as prior context.
+- The goal is to suppress duplicate agent runs while preserving the real chat structure.
+
+Media treatment stays conservative:
+
+- The subject message keeps normal top-level media handling.
+- Earlier batched messages stay contextual by default rather than being promoted to top-level `MediaPaths` or prompt images.
+- If the subject has no top-level media inputs of its own, the connector may fall back to the last earlier media-bearing message in that burst and use only that one message for top-level media handoff.
+
+This behavior exists to make normal Matrix client usage "just work" more often without requiring a custom client flow or changing OpenClaw's conversation model into a synthetic merged-message model.
 
 ### Messaging and media
 
