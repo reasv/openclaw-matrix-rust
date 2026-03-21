@@ -26,7 +26,6 @@ import {
 import {
   buildMatrixAttachmentTextBlocks,
   buildMatrixEnrichedBodyText,
-  buildMatrixEventContextLine,
   renderMatrixFormattedBody,
   resolveMatrixBodyForAgent,
   resolveMatrixInboundSenderLabel,
@@ -529,10 +528,9 @@ test("stores readable BodyForAgent and enveloped Body for group thread messages"
   assert.equal(presentation.baseBodyText, "hello :party_parrot:");
   assert.equal(
     presentation.bodyForAgent,
-    'Bu (bu): hello :party_parrot:\n[Matrix event] room="!room:example.org" event="$event" thread="$thread-root"',
+    "Bu (bu): hello :party_parrot:",
   );
   assert.match(presentation.body, /^formatted:Bu \(bu\):hello :party_parrot:/);
-  assert.match(presentation.body, /\[Matrix event\] room="!room:example\.org" event="\$event" thread="\$thread-root"/);
 });
 
 test("formats reply preview blocks separately from current-message previews", () => {
@@ -546,7 +544,6 @@ test("formats reply preview blocks separately from current-message previews", ()
       replyAttachmentTextBlocks: ['[Reply attachments: 1]', '[Reply attachment 1] filename="reply.png" type="image/png"'],
       replyPreviewTextBlocks: ["[Tweet: Alice (@alice)]\nhello"],
       previewTextBlocks: ["[Link preview: example.org]\ncurrent preview"],
-      eventContextLine: '[Matrix event] room="!room:example.org" event="$event"',
     }),
     [
       "current body",
@@ -561,7 +558,6 @@ test("formats reply preview blocks separately from current-message previews", ()
       "hello",
       "[Link preview: example.org]",
       "current preview",
-      '[Matrix event] room="!room:example.org" event="$event"',
     ].join("\n"),
   );
 });
@@ -587,14 +583,6 @@ test("builds stable attachment manifest text with fallback values", () => {
       '[Attachment 1] filename="photo.jpg" type="image/jpeg"',
       '[Attachment 2] filename="file-2" type="application/octet-stream"',
     ],
-  );
-  assert.equal(
-    buildMatrixEventContextLine({
-      roomId: "!room:example.org",
-      eventId: "$event",
-      threadRootId: "$thread",
-    }),
-    '[Matrix event] room="!room:example.org" event="$event" thread="$thread"',
   );
 });
 
@@ -1283,7 +1271,7 @@ test("buffers unmentioned room messages and flushes them on the next mention", a
   const ctx = recorded[0]?.ctx as Record<string, unknown>;
   assert.equal(
     ctx.BodyForAgent,
-    'Bu (bu): @bot what do you think?\n[Matrix event] room="!room:example.org" event="$event-2"',
+    "Bu (bu): @bot what do you think?",
   );
   assert.deepEqual(ctx.InboundHistory, [
     {
@@ -1730,7 +1718,7 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
   const ctx = recorded[0]?.ctx as Record<string, unknown>;
   assert.match(
     String(ctx.BodyForAgent ?? ""),
-    /^look at this\n\[Attachments: 1\]\n\[Attachment 1\] filename="dm-photo\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="([A-Z2-7]{10}\.png)" local-path-note="combine saved-to \+ saved-as"\n\[Matrix event\] room="!dm:example\.org" event="\$dm-image"$/,
+    /^look at this\n\[Attachments: 1\]\n\[Attachment 1\] filename="dm-photo\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="([A-Z2-7]{10}\.png)" local-path-note="combine saved-to \+ saved-as"$/,
   );
   const savedName = String(ctx.BodyForAgent ?? "").match(
     /saved-as="([^"]+)"/,

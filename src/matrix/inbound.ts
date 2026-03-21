@@ -37,7 +37,6 @@ import {
 import {
   buildMatrixAttachmentTextBlocks,
   buildMatrixEnrichedBodyText,
-  buildMatrixEventContextLine,
   resolveMatrixBodyForAgent,
   resolveMatrixInboundSenderLabel,
   resolveMatrixReadableBody,
@@ -624,11 +623,6 @@ export function buildMatrixInboundPresentation(params: {
     replyAttachmentTextBlocks: params.replyAttachmentTextBlocks,
     replyPreviewTextBlocks: params.replyPreviewTextBlocks,
     previewTextBlocks: params.previewTextBlocks,
-    eventContextLine: buildMatrixEventContextLine({
-      roomId: params.event.roomId,
-      eventId: params.event.eventId,
-      threadRootId: params.event.threadRootId,
-    }),
   });
   const body = params.formatInboundEnvelope({
     channel: "Matrix",

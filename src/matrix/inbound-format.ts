@@ -133,20 +133,6 @@ export function buildMatrixAttachmentTextBlocks(params: {
   return lines;
 }
 
-export function buildMatrixEventContextLine(params: {
-  roomId: string;
-  eventId: string;
-  threadRootId?: string;
-}): string {
-  const roomId = params.roomId.trim();
-  const eventId = params.eventId.trim();
-  const threadRootId = params.threadRootId?.trim();
-  if (threadRootId) {
-    return `[Matrix event] room="${roomId}" event="${eventId}" thread="${threadRootId}"`;
-  }
-  return `[Matrix event] room="${roomId}" event="${eventId}"`;
-}
-
 export function buildMatrixEnrichedBodyText(params: {
   baseBodyText: string;
   attachmentTextBlocks?: string[];
@@ -156,7 +142,6 @@ export function buildMatrixEnrichedBodyText(params: {
   replyAttachmentTextBlocks?: string[];
   replyPreviewTextBlocks?: string[];
   previewTextBlocks: string[];
-  eventContextLine?: string;
 }): string {
   return [
     params.baseBodyText,
@@ -172,7 +157,6 @@ export function buildMatrixEnrichedBodyText(params: {
     ...(params.replyAttachmentTextBlocks ?? []),
     ...((params.replyPreviewTextBlocks ?? []).flatMap((block) => ["[Reply link preview]", block])),
     ...params.previewTextBlocks,
-    params.eventContextLine,
   ]
     .filter(Boolean)
     .join("\n")
