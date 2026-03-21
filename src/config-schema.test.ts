@@ -35,3 +35,18 @@ test("accepts media handoff settings", () => {
   assert.equal(result.imageHandlingMode, "multimodal-only");
   assert.equal(result.otherMediaPaths, false);
 });
+
+test("accepts user profile hint settings", () => {
+  const result = MatrixRustConfigSchema.parse({
+    homeserver: "https://matrix.example",
+    userId: "@bot:example.org",
+    password: "secret",
+    userProfiles: {
+      enabled: false,
+      rootDir: "profiles",
+    },
+  });
+
+  assert.equal(result.userProfiles?.enabled, false);
+  assert.equal(result.userProfiles?.rootDir, "profiles");
+});

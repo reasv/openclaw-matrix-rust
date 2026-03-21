@@ -32,6 +32,7 @@ import {
   resolveMatrixInboundSenderLabel,
   resolveMatrixReadableBody,
 } from "./inbound-format.js";
+import { resolveMatrixUserProfilePath } from "./user-profiles.js";
 import { createMatrixRoomHistoryBuffer } from "./history-buffer.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 import { setMatrixRustRuntime } from "../runtime.js";
@@ -1677,6 +1678,9 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
         password: "secret",
         autoDownloadAttachmentMaxBytes: -1,
         autoDownloadAttachmentScope: "all",
+        userProfiles: {
+          enabled: false,
+        },
         dm: {
           policy: "open",
         },
@@ -1735,6 +1739,72 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
   assert.equal(await fs.readFile(savedPath, "utf8"), "dm-image");
   assert.equal(ctx.InboundHistory, undefined);
+});
+
+test("prepends user profile availability hints to BodyForAgent", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-user-profile-body-"));
+  const resolvedProfilePath = await resolveMatrixUserProfilePath({
+    workspaceRoot: workspaceDir,
+    rootDir: "users",
+    target: {
+      provider: "matrix",
+      senderId: "@alice:example.org",
+      username: "alice",
+    },
+  });
+  await fs.mkdir(path.dirname(resolvedProfilePath.absolutePath), { recursive: true });
+  await fs.writeFile(resolvedProfilePath.absolutePath, "# Summary\n\nsaved\n");
+
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+    }),
+  );
+
+  const cfg = {
+    agents: {
+      defaults: {
+        workspace: workspaceDir,
+      },
+    },
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        userProfiles: {
+          enabled: true,
+        },
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount(cfg.channels?.matrix as ResolvedMatrixAccount["config"]);
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client: createClientForInboundTests(),
+      roomHistory: createMatrixRoomHistoryBuffer(0),
+      event: createInboundEvent({
+        body: "@bot do you remember me?",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+    }),
+    /stop after record/,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.match(String(ctx.BodyForAgent ?? ""), /^\[User profile\] A saved profile exists/);
+  assert.match(String(ctx.BodyForAgent ?? ""), /Alice \(alice\): @bot do you remember me\?/);
 });
 
 test("batched room context falls back to the last earlier media-bearing message when the subject has none", async () => {

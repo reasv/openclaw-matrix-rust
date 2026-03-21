@@ -147,7 +147,11 @@ Example:
       "autoDownloadAttachmentMaxBytes": 0,
       "autoDownloadAttachmentScope": "rooms",
       "imageHandlingMode": "dual",
-      "otherMediaPaths": true
+      "otherMediaPaths": true,
+      "userProfiles": {
+        "enabled": true,
+        "rootDir": "users"
+      }
     }
   }
 }
@@ -176,8 +180,19 @@ Useful optional settings include:
 - `autoDownloadAttachmentScope`
 - `imageHandlingMode`
 - `otherMediaPaths`
+- `userProfiles`
 
 See `src/config-schema.ts` for the exact schema.
+
+`userProfiles` is intentionally lightweight and does not depend on `mtools` being installed.
+
+- Default behavior: enabled
+- When enabled and a workspace is configured, inbound `BodyForAgent` text is prefixed with a short trusted note telling the model whether a saved profile exists for the sender.
+- If a profile exists, the note includes the resolved workspace path.
+- If no profile exists yet, the note tells the model where it should save one after learning durable information.
+- The note only advertises file-backed state and suggests dedicated user-profile tools "if available", so the Matrix plugin stays independent from the utility-tools plugin.
+- Set `channels.matrix.userProfiles.enabled` to `false` to disable the entire system.
+- `channels.matrix.userProfiles.rootDir` defaults to `users` and should match the root used by any profile-management tools.
 
 ### 5. Start OpenClaw
 

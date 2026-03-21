@@ -58,6 +58,7 @@ import {
   type MatrixReplyDispatchKind,
   type MatrixReplyPolicyScope,
 } from "./reply-policy.js";
+import { buildMatrixUserProfileHint } from "./user-profiles.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
@@ -1918,11 +1919,19 @@ export async function handleMatrixInboundEvent(params: {
     envelopeOptions,
     formatInboundEnvelope: runtime.channel.reply.formatInboundEnvelope,
   });
+  const userProfileHint = await buildMatrixUserProfileHint({
+    cfg,
+    accountConfig: account.config,
+    event,
+  });
   const senderUsername = presentation.senderUsername;
   const body = presentation.body;
+  const bodyForAgent = userProfileHint
+    ? `${userProfileHint}\n\n${presentation.bodyForAgent}`
+    : presentation.bodyForAgent;
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
-    BodyForAgent: presentation.bodyForAgent,
+    BodyForAgent: bodyForAgent,
     InboundHistory:
       inboundHistory.length > 0
         ? inboundHistory.map((entry) => ({
