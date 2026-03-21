@@ -187,10 +187,12 @@ See `src/config-schema.ts` for the exact schema.
 `userProfiles` is intentionally lightweight and does not depend on `mtools` being installed.
 
 - Default behavior: enabled
-- When enabled and a workspace is configured, inbound `BodyForAgent` text is prefixed with a short trusted note telling the model whether a saved profile exists for the sender.
-- If a profile exists, the note includes the resolved workspace path.
-- If no profile exists yet, the note tells the model where it should save one after learning durable information.
-- The note only advertises file-backed state and suggests dedicated user-profile tools "if available", so the Matrix plugin stays independent from the utility-tools plugin.
+- When enabled and a workspace is configured, the plugin injects a short per-turn prompt note telling the model whether a saved profile exists for the sender.
+- The note is ephemeral prompt context, not part of the stored inbound message text, so it does not pollute later session history.
+- Current note text is intentionally short:
+  - `[User profile] Available for this sender.`
+  - `[User profile] None yet for this sender.`
+- The note advertises only availability state, so the Matrix plugin stays independent from the utility-tools plugin and does not leak internal file paths into every turn.
 - Set `channels.matrix.userProfiles.enabled` to `false` to disable the entire system.
 - `channels.matrix.userProfiles.rootDir` defaults to `users` and should match the root used by any profile-management tools.
 

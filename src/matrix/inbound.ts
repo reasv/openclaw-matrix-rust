@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { MatrixNativeClient } from "./adapter/native-client.js";
-import { getMatrixRustRuntime } from "../runtime.js";
+import { getMatrixRustRuntime, setPendingMatrixUserProfileHint } from "../runtime.js";
 import {
   createReplyPrefixOptions,
   createScopedPairingAccess,
@@ -1924,14 +1924,12 @@ export async function handleMatrixInboundEvent(params: {
     accountConfig: account.config,
     event,
   });
+  setPendingMatrixUserProfileHint(route.sessionKey, userProfileHint);
   const senderUsername = presentation.senderUsername;
   const body = presentation.body;
-  const bodyForAgent = userProfileHint
-    ? `${userProfileHint}\n\n${presentation.bodyForAgent}`
-    : presentation.bodyForAgent;
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
-    BodyForAgent: bodyForAgent,
+    BodyForAgent: presentation.bodyForAgent,
     InboundHistory:
       inboundHistory.length > 0
         ? inboundHistory.map((entry) => ({

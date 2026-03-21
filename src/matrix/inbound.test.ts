@@ -1741,7 +1741,7 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
   assert.equal(ctx.InboundHistory, undefined);
 });
 
-test("prepends user profile availability hints to BodyForAgent", async () => {
+test("does not prepend user profile availability hints to BodyForAgent", async () => {
   const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rust-user-profile-body-"));
   const resolvedProfilePath = await resolveMatrixUserProfilePath({
     workspaceRoot: workspaceDir,
@@ -1803,7 +1803,7 @@ test("prepends user profile availability hints to BodyForAgent", async () => {
   );
 
   const ctx = recorded[0]?.ctx as Record<string, unknown>;
-  assert.match(String(ctx.BodyForAgent ?? ""), /^\[User profile\] A saved profile exists/);
+  assert.doesNotMatch(String(ctx.BodyForAgent ?? ""), /^\[User profile\]/);
   assert.match(String(ctx.BodyForAgent ?? ""), /Alice \(alice\): @bot do you remember me\?/);
 });
 

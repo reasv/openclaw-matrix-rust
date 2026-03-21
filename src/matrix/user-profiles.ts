@@ -32,16 +32,10 @@ export async function buildMatrixUserProfileHint(params: {
 
   const prefix = "[User profile]";
   if (resolved.exists) {
-    return (
-      `${prefix} A saved profile exists for this sender at ${resolved.workspacePath}. ` +
-      `Use the dedicated user-profile tools if they are available; otherwise inspect or update that markdown file directly.`
-    );
+    return `${prefix} Available for this sender.`;
   }
 
-  return (
-    `${prefix} No saved profile exists yet for this sender. ` +
-    `If you learn durable preferences or facts, save them after replying under ${resolved.workspacePath}.`
-  );
+  return `${prefix} None yet for this sender.`;
 }
 
 export async function resolveMatrixUserProfilePath(params: {
