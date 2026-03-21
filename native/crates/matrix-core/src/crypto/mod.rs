@@ -1,12 +1,15 @@
 use matrix_sdk::{
+    encryption::{backups::BackupState, VerificationState as SdkVerificationState},
     Client,
-    encryption::{VerificationState as SdkVerificationState, backups::BackupState},
 };
 
 use crate::api::{MatrixKeyBackupState, MatrixVerificationState};
 
 pub async fn restore_recovery(client: &Client, recovery_key: Option<&str>) -> String {
-    let Some(recovery_key) = recovery_key.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(recovery_key) = recovery_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return "no recovery key configured; verification restore skipped".to_string();
     };
 
@@ -38,7 +41,10 @@ pub async fn diagnostics(
     encryption_enabled: bool,
 ) -> (MatrixVerificationState, MatrixKeyBackupState) {
     if !encryption_enabled {
-        return (MatrixVerificationState::Disabled, MatrixKeyBackupState::Disabled);
+        return (
+            MatrixVerificationState::Disabled,
+            MatrixKeyBackupState::Disabled,
+        );
     }
 
     let verification_state = match client.encryption().verification_state().get() {

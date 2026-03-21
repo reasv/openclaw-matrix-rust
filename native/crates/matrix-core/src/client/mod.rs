@@ -12,7 +12,6 @@ use matrix_sdk::{
     room::{edit::EditedContent, IncludeRelations, MessagesOptions, RelationsOptions},
     ruma::{
         api::Direction,
-        serde::Raw,
         events::room::message::{
             OriginalSyncRoomMessageEvent, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation,
@@ -22,6 +21,7 @@ use matrix_sdk::{
             relation::RelationType, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
             TimelineEventType,
         },
+        serde::Raw,
         EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomId,
         RoomOrAliasId, UInt, UserId,
     },
@@ -1477,7 +1477,10 @@ fn decode_reaction_event(value: &Value) -> Option<MatrixReactionEvent> {
         sender_id,
         key,
         shortcode: reactions::read_reaction_shortcode(content),
-        timestamp_ms: value.get("origin_server_ts").and_then(Value::as_i64).unwrap_or_default(),
+        timestamp_ms: value
+            .get("origin_server_ts")
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
     })
 }
 
@@ -1542,7 +1545,8 @@ async fn restore_or_login(
     shared: &Arc<SharedState>,
 ) -> MatrixResult<StoredSession> {
     if let Some(stored) = existing_session {
-        if matches!(config.auth, MatrixAuthConfig::Password { .. }) && stored.refresh_token.is_some()
+        if matches!(config.auth, MatrixAuthConfig::Password { .. })
+            && stored.refresh_token.is_some()
         {
             shared.push_lifecycle(
                 NativeLifecycleStage::RestoreOrLogin,
@@ -2095,7 +2099,12 @@ mod tests {
             300000,
             2,
         ));
-        runtime.block_on(mount_sync_for_token(&server, "token-2", Some("next-1"), "next-2"));
+        runtime.block_on(mount_sync_for_token(
+            &server,
+            "token-2",
+            Some("next-1"),
+            "next-2",
+        ));
 
         let mut second = MatrixCoreService::new();
         let second_diagnostics = second.start(config).unwrap();
@@ -2405,5 +2414,4 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
     }
-
 }

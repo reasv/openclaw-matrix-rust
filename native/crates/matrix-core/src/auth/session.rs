@@ -1,9 +1,9 @@
 use chrono::Utc;
 use matrix_sdk::{
-    Client,
     authentication::matrix::MatrixSession,
     ruma::{OwnedDeviceId, OwnedUserId},
     store::RoomLoadSettings,
+    Client,
 };
 
 use crate::{
@@ -19,7 +19,8 @@ pub fn auth_mode(config: &MatrixClientConfig) -> &'static str {
 }
 
 pub fn load_session(config: &MatrixClientConfig) -> MatrixResult<Option<StoredSession>> {
-    let Some(mut existing) = state::read_json::<StoredSession>(&config.state_layout.session_file)? else {
+    let Some(mut existing) = state::read_json::<StoredSession>(&config.state_layout.session_file)?
+    else {
         return Ok(None);
     };
 
@@ -71,7 +72,9 @@ pub fn persist_client_session(
         config,
         auth_mode(config),
         session,
-        previous.map(|value| value.created_at).unwrap_or_else(Utc::now),
+        previous
+            .map(|value| value.created_at)
+            .unwrap_or_else(Utc::now),
         sync_token.or_else(|| previous.and_then(|value| value.sync_token.clone())),
     );
     state::write_json(&config.state_layout.session_file, &stored)?;

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "mode")]
 pub enum MatrixAuthConfig {
-    Password { password: String },
+    Password {
+        password: String,
+    },
     AccessToken {
         #[serde(rename = "accessToken")]
         access_token: String,

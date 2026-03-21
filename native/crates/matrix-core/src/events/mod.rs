@@ -1,13 +1,10 @@
 use chrono::{DateTime, Utc};
 use matrix_sdk::{
     deserialized_responses::TimelineEvent,
-    Room,
-    ruma::events::{
-        room::message::{
-            FormattedBody, MessageType, OriginalSyncRoomMessageEvent, Relation,
-            RoomMessageEventContent,
-        },
+    ruma::events::room::message::{
+        FormattedBody, MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
     },
+    Room,
 };
 use serde_json::Value;
 
@@ -56,8 +53,8 @@ fn decode_html_entities(value: &str) -> String {
 }
 
 fn read_html_attribute(attrs: &str, name: &str) -> Option<String> {
-    let double_quoted =
-        regex::Regex::new(&format!(r#"{name}\s*=\s*"([^"]*)""#)).expect("valid html attribute regex");
+    let double_quoted = regex::Regex::new(&format!(r#"{name}\s*=\s*"([^"]*)""#))
+        .expect("valid html attribute regex");
     if let Some(value) = double_quoted
         .captures(attrs)
         .and_then(|captures| captures.get(1))
@@ -65,8 +62,8 @@ fn read_html_attribute(attrs: &str, name: &str) -> Option<String> {
     {
         return Some(value);
     }
-    let single_quoted =
-        regex::Regex::new(&format!(r#"{name}\s*=\s*'([^']*)'"#)).expect("valid html attribute regex");
+    let single_quoted = regex::Regex::new(&format!(r#"{name}\s*=\s*'([^']*)'"#))
+        .expect("valid html attribute regex");
     single_quoted
         .captures(attrs)
         .and_then(|captures| captures.get(1))
@@ -115,18 +112,24 @@ fn build_custom_emoji_placeholder(attrs: &str) -> String {
 }
 
 fn render_formatted_body_text(formatted_body: Option<&str>) -> (String, bool) {
-    let Some(formatted_body) = formatted_body.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(formatted_body) = formatted_body
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return (String::new(), false);
     };
 
-    let custom_img_pattern =
-        regex::Regex::new(r#"(?is)<img\b([^>]*\bdata-mx-emoticon\b[^>]*)>"#).expect("valid custom emoji image regex");
+    let custom_img_pattern = regex::Regex::new(r#"(?is)<img\b([^>]*\bdata-mx-emoticon\b[^>]*)>"#)
+        .expect("valid custom emoji image regex");
     let generic_mxc_img_pattern =
-        regex::Regex::new(r#"(?is)<img\b([^>]*\bsrc\s*=\s*["']mxc://[^"']+["'][^>]*)>"#).expect("valid generic mxc image regex");
+        regex::Regex::new(r#"(?is)<img\b([^>]*\bsrc\s*=\s*["']mxc://[^"']+["'][^>]*)>"#)
+            .expect("valid generic mxc image regex");
     let line_break_pattern = regex::Regex::new(r"(?i)<br\s*/?>").expect("valid br regex");
     let block_close_pattern =
-        regex::Regex::new(r"(?i)</(?:p|div|li|ul|ol|blockquote|pre|h[1-6]|table|tr)>").expect("valid block close regex");
-    let list_item_open_pattern = regex::Regex::new(r"(?i)<li\b[^>]*>").expect("valid list item regex");
+        regex::Regex::new(r"(?i)</(?:p|div|li|ul|ol|blockquote|pre|h[1-6]|table|tr)>")
+            .expect("valid block close regex");
+    let list_item_open_pattern =
+        regex::Regex::new(r"(?i)<li\b[^>]*>").expect("valid list item regex");
     let tag_pattern = regex::Regex::new(r"<[^>]+>").expect("valid html tag regex");
     let whitespace_newline_pattern =
         regex::Regex::new(r"[ \t]+\n").expect("valid whitespace newline regex");
@@ -140,7 +143,10 @@ fn render_formatted_body_text(formatted_body: Option<&str>) -> (String, bool) {
             format!(
                 " {} ",
                 build_custom_emoji_placeholder(
-                    captures.get(1).map(|value| value.as_str()).unwrap_or_default()
+                    captures
+                        .get(1)
+                        .map(|value| value.as_str())
+                        .unwrap_or_default()
                 )
             )
         })
@@ -151,7 +157,10 @@ fn render_formatted_body_text(formatted_body: Option<&str>) -> (String, bool) {
             format!(
                 " {} ",
                 build_custom_emoji_placeholder(
-                    captures.get(1).map(|value| value.as_str()).unwrap_or_default()
+                    captures
+                        .get(1)
+                        .map(|value| value.as_str())
+                        .unwrap_or_default()
                 )
             )
         })
@@ -226,16 +235,12 @@ fn media_items(msgtype: &MessageType) -> Vec<MatrixInboundMedia> {
     }
 }
 
-fn relation_details(
-    content: &RoomMessageEventContent,
-) -> (Option<String>, Option<String>, bool) {
+fn relation_details(content: &RoomMessageEventContent) -> (Option<String>, Option<String>, bool) {
     match content.relates_to.as_ref() {
         Some(Relation::Replacement(_)) => (None, None, true),
-        Some(Relation::Reply { in_reply_to }) => (
-            Some(in_reply_to.event_id.to_string()),
-            None,
-            false,
-        ),
+        Some(Relation::Reply { in_reply_to }) => {
+            (Some(in_reply_to.event_id.to_string()), None, false)
+        }
         Some(Relation::Thread(thread)) => (
             thread
                 .in_reply_to
@@ -249,8 +254,15 @@ fn relation_details(
 }
 
 fn readable_body(content: &Value) -> String {
-    let msgtype = content.get("msgtype").and_then(Value::as_str).map(str::trim);
-    let body = content.get("body").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let msgtype = content
+        .get("msgtype")
+        .and_then(Value::as_str)
+        .map(str::trim);
+    let body = content
+        .get("body")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
     let formatted_body = content
         .get("formatted_body")
         .and_then(Value::as_str)
@@ -382,7 +394,11 @@ pub async fn normalize_inbound_event(
         MatrixChatType::Channel
     };
 
-    let room_name = room.display_name().await.ok().map(|value| value.to_string());
+    let room_name = room
+        .display_name()
+        .await
+        .ok()
+        .map(|value| value.to_string());
     let room_alias = room.canonical_alias().map(|value| value.to_string());
     let sender_name = room
         .get_member_no_sync(&event.sender)
@@ -402,11 +418,15 @@ pub async fn normalize_inbound_event(
         body: event.content.body().to_string(),
         msgtype: Some(event.content.msgtype.msgtype().to_string()),
         formatted_body: formatted_body(&event.content.msgtype),
-        mentions: event.content.mentions.as_ref().map(|mentions| MatrixInboundMentions {
-            user_ids: (!mentions.user_ids.is_empty())
-                .then(|| mentions.user_ids.iter().map(ToString::to_string).collect()),
-            room: mentions.room.then_some(true),
-        }),
+        mentions: event
+            .content
+            .mentions
+            .as_ref()
+            .map(|mentions| MatrixInboundMentions {
+                user_ids: (!mentions.user_ids.is_empty())
+                    .then(|| mentions.user_ids.iter().map(ToString::to_string).collect()),
+                room: mentions.room.then_some(true),
+            }),
         reply_to_id,
         thread_root_id,
         timestamp: timestamp_from_event(event),

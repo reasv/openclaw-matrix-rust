@@ -1,23 +1,27 @@
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use regex::Regex;
-use reqwest::{Client, StatusCode, Url, redirect::Policy};
+use reqwest::{redirect::Policy, Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    MatrixError, MatrixResult,
     api::{
         MatrixClientConfig, MatrixLinkPreviewMedia, MatrixLinkPreviewResult,
         MatrixLinkPreviewSource, MatrixLinkPreviewSourceKind, MatrixResolveLinkPreviewsRequest,
     },
+    MatrixError, MatrixResult,
 };
 
 const MAX_PREVIEW_URLS: usize = 3;
 const FETCH_TIMEOUT_MS: u64 = 4_000;
-const SYNAPSE_PREVIEW_PATHS: [&str; 2] = ["/_matrix/media/v3/preview_url", "/_matrix/media/r0/preview_url"];
-const MEDIA_DOWNLOAD_PATHS: [&str; 2] = ["/_matrix/media/v3/download", "/_matrix/media/r0/download"];
+const SYNAPSE_PREVIEW_PATHS: [&str; 2] = [
+    "/_matrix/media/v3/preview_url",
+    "/_matrix/media/r0/preview_url",
+];
+const MEDIA_DOWNLOAD_PATHS: [&str; 2] =
+    ["/_matrix/media/v3/download", "/_matrix/media/r0/download"];
 const FXTWITTER_API_BASE: &str = "https://api.fxtwitter.com";
 const PREVIEW_USER_AGENT: &str = "OpenClaw-Matrix-Preview/1.0";
 const X_STATUS_HOSTS: &[&str] = &[
@@ -145,7 +149,9 @@ pub async fn resolve_link_previews(
             }
         }
 
-        let Some(preview) = fetch_synapse_preview(&client, config, access_token, &parsed_url).await? else {
+        let Some(preview) =
+            fetch_synapse_preview(&client, config, access_token, &parsed_url).await?
+        else {
             continue;
         };
         let text = build_synapse_preview_text(&parsed_url, &preview);
@@ -155,12 +161,16 @@ pub async fn resolve_link_previews(
         sources.push(MatrixLinkPreviewSource {
             url: parsed_url.to_string(),
             source_kind: MatrixLinkPreviewSourceKind::Synapse,
-            site_name: preview_string(&preview, "og:site_name").or_else(|| Some(parsed_url.host_str().unwrap_or_default().to_string())),
+            site_name: preview_string(&preview, "og:site_name")
+                .or_else(|| Some(parsed_url.host_str().unwrap_or_default().to_string())),
             title: preview_string(&preview, "og:title"),
             description: preview_string(&preview, "og:description"),
         });
         if include_images {
-            media.extend(resolve_synapse_preview_media(&client, config, access_token, &preview, max_bytes).await?);
+            media.extend(
+                resolve_synapse_preview_media(&client, config, access_token, &preview, max_bytes)
+                    .await?,
+            );
         }
     }
 
@@ -185,7 +195,9 @@ fn extract_urls(text: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut urls = Vec::new();
     for matched in regex.find_iter(text) {
-        let cleaned = matched.as_str().trim_end_matches([',', ')', '.', ';', '!', '?']);
+        let cleaned = matched
+            .as_str()
+            .trim_end_matches([',', ')', '.', ';', '!', '?']);
         if cleaned.is_empty() || !seen.insert(cleaned.to_string()) {
             continue;
         }
@@ -227,7 +239,10 @@ fn build_synapse_preview_text(url: &Url, preview: &Value) -> Option<String> {
     if pieces.is_empty() {
         return None;
     }
-    Some(format!("[Link preview: {site_name}]\n{}", pieces.join("\n")))
+    Some(format!(
+        "[Link preview: {site_name}]\n{}",
+        pieces.join("\n")
+    ))
 }
 
 async fn fetch_synapse_preview(
@@ -237,9 +252,11 @@ async fn fetch_synapse_preview(
     url: &Url,
 ) -> MatrixResult<Option<Value>> {
     for path in SYNAPSE_PREVIEW_PATHS {
-        let mut endpoint =
-            Url::parse(&format!("{}{path}", config.homeserver.trim_end_matches('/')))
-                .map_err(|err| MatrixError::State(format!("invalid preview endpoint: {err}")))?;
+        let mut endpoint = Url::parse(&format!(
+            "{}{path}",
+            config.homeserver.trim_end_matches('/')
+        ))
+        .map_err(|err| MatrixError::State(format!("invalid preview endpoint: {err}")))?;
         endpoint.query_pairs_mut().append_pair("url", url.as_str());
         let response = client
             .get(endpoint)
@@ -265,9 +282,15 @@ fn parse_x_status_url(url: &Url) -> Option<(Option<String>, String)> {
     }
     let parts = url
         .path_segments()
-        .map(|segments| segments.filter(|value| !value.is_empty()).collect::<Vec<_>>())
+        .map(|segments| {
+            segments
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
-    let status_index = parts.iter().position(|part| part.eq_ignore_ascii_case("status"))?;
+    let status_index = parts
+        .iter()
+        .position(|part| part.eq_ignore_ascii_case("status"))?;
     let status_id = parts.get(status_index + 1)?;
     if status_id.is_empty() || !status_id.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
@@ -320,9 +343,23 @@ fn summarize_count(value: Option<u64>, label: &str) -> Option<String> {
 }
 
 fn format_fxtwitter_tweet(tweet: &FxTwitterTweet, heading: &str) -> Option<String> {
-    let text = tweet.text.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    let author_name = tweet.author.as_ref().and_then(|author| author.name.as_deref()).map(str::trim).filter(|value| !value.is_empty());
-    let author_handle = tweet.author.as_ref().and_then(|author| author.screen_name.as_deref()).map(str::trim).filter(|value| !value.is_empty());
+    let text = tweet
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let author_name = tweet
+        .author
+        .as_ref()
+        .and_then(|author| author.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let author_handle = tweet
+        .author
+        .as_ref()
+        .and_then(|author| author.screen_name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     if text.is_none() && author_name.is_none() && author_handle.is_none() {
         return None;
     }
@@ -336,15 +373,28 @@ fn format_fxtwitter_tweet(tweet: &FxTwitterTweet, heading: &str) -> Option<Strin
     if let Some(text) = text {
         lines.push(text.to_string());
     }
-    if let Some(replying_to) = tweet.replying_to.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(replying_to) = tweet
+        .replying_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         lines.push(format!("[Replying to @{replying_to}]"));
     }
     if let Some(poll) = &tweet.poll {
         if let Some(choices) = &poll.choices {
             if !choices.is_empty() {
-                let summary = match (poll.total_votes, poll.time_left_en.as_deref(), poll.ends_at.as_deref()) {
-                    (Some(total_votes), Some(time_left), _) => format!("[Poll: {total_votes} votes, {time_left}]"),
-                    (Some(total_votes), None, Some(ends_at)) => format!("[Poll: {total_votes} votes, ends {ends_at}]"),
+                let summary = match (
+                    poll.total_votes,
+                    poll.time_left_en.as_deref(),
+                    poll.ends_at.as_deref(),
+                ) {
+                    (Some(total_votes), Some(time_left), _) => {
+                        format!("[Poll: {total_votes} votes, {time_left}]")
+                    }
+                    (Some(total_votes), None, Some(ends_at)) => {
+                        format!("[Poll: {total_votes} votes, ends {ends_at}]")
+                    }
                     (Some(total_votes), None, None) => format!("[Poll: {total_votes} votes]"),
                     (None, Some(time_left), _) => format!("[Poll: {time_left}]"),
                     (None, None, Some(ends_at)) => format!("[Poll: ends {ends_at}]"),
@@ -353,7 +403,12 @@ fn format_fxtwitter_tweet(tweet: &FxTwitterTweet, heading: &str) -> Option<Strin
                 lines.push(summary);
                 for choice in choices {
                     let mut pieces = Vec::new();
-                    if let Some(label) = choice.label.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+                    if let Some(label) = choice
+                        .label
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
                         pieces.push(label.to_string());
                     }
                     if let Some(count) = choice.count {
@@ -369,10 +424,22 @@ fn format_fxtwitter_tweet(tweet: &FxTwitterTweet, heading: &str) -> Option<Strin
             }
         }
     }
-    let photos = tweet.media.as_ref().and_then(|media| media.photos.as_ref()).map(Vec::len).unwrap_or(0);
-    let videos = tweet.media.as_ref().and_then(|media| media.videos.as_ref()).map(Vec::len).unwrap_or(0);
+    let photos = tweet
+        .media
+        .as_ref()
+        .and_then(|media| media.photos.as_ref())
+        .map(Vec::len)
+        .unwrap_or(0);
+    let videos = tweet
+        .media
+        .as_ref()
+        .and_then(|media| media.videos.as_ref())
+        .map(Vec::len)
+        .unwrap_or(0);
     if photos > 0 || videos > 0 {
-        lines.push(format!("[Tweet media: {photos} photo(s), {videos} video(s)]"));
+        lines.push(format!(
+            "[Tweet media: {photos} photo(s), {videos} video(s)]"
+        ));
     }
     let counts = [
         summarize_count(tweet.likes, "likes"),
@@ -406,7 +473,16 @@ async fn resolve_synapse_preview_media(
     };
     let content_type = preview_string(preview, "og:image:type");
     if raw_image.starts_with("mxc://") {
-        if let Some(media) = download_mxc_media(client, config, access_token, &raw_image, max_bytes, content_type).await? {
+        if let Some(media) = download_mxc_media(
+            client,
+            config,
+            access_token,
+            &raw_image,
+            max_bytes,
+            content_type,
+        )
+        .await?
+        {
             return Ok(vec![media]);
         }
         return Ok(Vec::new());
@@ -467,7 +543,12 @@ async fn download_external_image(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    if !content_type.as_deref().unwrap_or("").to_ascii_lowercase().starts_with("image/") {
+    if !content_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .starts_with("image/")
+    {
         return Ok(None);
     }
     let bytes = response.bytes().await?;
@@ -498,7 +579,11 @@ async fn download_mxc_media(
             "{}{path}/{server_name}/{media_id}",
             config.homeserver.trim_end_matches('/'),
         );
-        let response = client.get(&endpoint).bearer_auth(access_token).send().await?;
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(access_token)
+            .send()
+            .await?;
         if response.status() == StatusCode::NOT_FOUND {
             continue;
         }
@@ -549,8 +634,8 @@ fn infer_filename(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path, query_param},
+        Mock, MockServer, ResponseTemplate,
     };
 
     use super::*;
@@ -640,7 +725,9 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/_matrix/media/v3/download/matrix.example.org/preview"))
+            .and(path(
+                "/_matrix/media/v3/download/matrix.example.org/preview",
+            ))
             .and(header("authorization", "Bearer matrix-token"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -668,10 +755,16 @@ mod tests {
             vec!["[Link preview: Example Site]\nExample title\nExample description".to_string()]
         );
         assert_eq!(result.sources.len(), 1);
-        assert_eq!(result.sources[0].source_kind, MatrixLinkPreviewSourceKind::Synapse);
+        assert_eq!(
+            result.sources[0].source_kind,
+            MatrixLinkPreviewSourceKind::Synapse
+        );
         assert_eq!(result.media.len(), 1);
         assert_eq!(result.media[0].content_type.as_deref(), Some("image/png"));
-        assert_eq!(STANDARD.decode(&result.media[0].data_base64).unwrap(), vec![1u8, 2, 3]);
+        assert_eq!(
+            STANDARD.decode(&result.media[0].data_base64).unwrap(),
+            vec![1u8, 2, 3]
+        );
     }
 
     #[tokio::test]
@@ -717,6 +810,9 @@ mod tests {
             ]
         );
         assert_eq!(result.sources.len(), 1);
-        assert_eq!(result.sources[0].source_kind, MatrixLinkPreviewSourceKind::FxTwitter);
+        assert_eq!(
+            result.sources[0].source_kind,
+            MatrixLinkPreviewSourceKind::FxTwitter
+        );
     }
 }
