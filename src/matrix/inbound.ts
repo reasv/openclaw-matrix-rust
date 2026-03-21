@@ -675,6 +675,8 @@ type MatrixEventTriggerState = {
   shouldTrigger: boolean;
 };
 
+const DEFAULT_RESET_TRIGGERS = ["/new", "/reset"];
+
 async function resolveMatrixEventContentContext(params: {
   cfg: CoreConfig;
   account: ResolvedMatrixAccount;
@@ -931,6 +933,42 @@ function addMatrixRoomHistoryEntries(params: {
       source: params.source,
     });
   }
+}
+
+function resolveLeadingControlCommandCandidate(bodyText: string): string | undefined {
+  const trimmed = bodyText.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith("/")) {
+    return trimmed.split(/\s+/, 1)[0];
+  }
+  const match = trimmed.match(
+    /^(?:(?:@\S+|<[^>]+>|[^\s/]+[:,])\s+)*(\/[^\s]+)/,
+  );
+  return match?.[1];
+}
+
+function isResetTriggerCommand(params: {
+  cfg: CoreConfig;
+  baseBodyText: string;
+  commandAuthorized: boolean;
+}): boolean {
+  if (!params.commandAuthorized) {
+    return false;
+  }
+  const command = resolveLeadingControlCommandCandidate(params.baseBodyText)?.toLowerCase();
+  if (!command) {
+    return false;
+  }
+  const cfgSession = (params.cfg as { session?: { resetTriggers?: unknown } }).session;
+  const configuredTriggers = Array.isArray(cfgSession?.resetTriggers)
+    ? cfgSession.resetTriggers
+    : undefined;
+  const resetTriggers = (configuredTriggers?.length ? configuredTriggers : DEFAULT_RESET_TRIGGERS)
+    .map((entry: unknown) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+    .filter(Boolean);
+  return resetTriggers.includes(command);
 }
 
 export async function resolveMatrixReplyContext(params: {
@@ -1757,6 +1795,13 @@ export async function handleMatrixInboundEvent(params: {
     eventTimestamp: subjectContent.eventTimestamp,
   });
   const batchTriggered = previousBatchContexts.some((entry) => entry.triggerState.shouldTrigger);
+  const suppressBufferedCarryover =
+    isRoom &&
+    isResetTriggerCommand({
+      cfg,
+      baseBodyText: subjectContent.baseBodyText,
+      commandAuthorized: subjectTriggerState.resolvedCommandGate.commandAuthorized,
+    });
   if (isRoom) {
     addMatrixRoomHistoryEntries({
       roomHistory,
@@ -1793,7 +1838,9 @@ export async function handleMatrixInboundEvent(params: {
     return;
   }
   const inboundHistory =
-    isRoom
+    suppressBufferedCarryover
+      ? []
+      : isRoom
       ? snapshotInboundHistory({
           roomHistory,
           scopeKey: historyScopeKey,
@@ -1814,10 +1861,12 @@ export async function handleMatrixInboundEvent(params: {
       media: subjectContent.media,
       promptImages: subjectContent.promptImages,
     },
-    previous: previousBatchContexts.map((entry) => ({
-      media: entry.media,
-      promptImages: entry.promptImages,
-    })),
+    previous: suppressBufferedCarryover
+      ? []
+      : previousBatchContexts.map((entry) => ({
+          media: entry.media,
+          promptImages: entry.promptImages,
+        })),
   });
   const { media, promptImages } = mediaSelection.selection;
   if (mediaSelection.source === "previous") {

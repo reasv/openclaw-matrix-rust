@@ -66,6 +66,7 @@ function createRecordStopError() {
 function createRuntimeForInboundTests(params: {
   onRecordInboundSession: (payload: Record<string, unknown>) => Promise<unknown>;
   stateDir?: string;
+  hasControlCommand?: (body: string, cfg: CoreConfig) => boolean;
 }) {
   return {
     state: {
@@ -93,7 +94,7 @@ function createRuntimeForInboundTests(params: {
         shouldHandleTextCommands: () => true,
       },
       text: {
-        hasControlCommand: () => false,
+        hasControlCommand: params.hasControlCommand ?? (() => false),
       },
       session: {
         resolveStorePath: () => "/tmp/openclaw-matrix-rust-session.json",
@@ -1850,6 +1851,84 @@ test("batched room context falls back to the last earlier media-bearing message 
   );
 });
 
+test("room buffer does not carry over into a /new reset turn", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+      hasControlCommand: (body) => body.toLowerCase().includes("/new"),
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        rooms: {
+          "!room:example.org": {
+            users: ["@alice:example.org"],
+          },
+        },
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+    rooms: {
+      "!room:example.org": {
+        users: ["@alice:example.org"],
+      },
+    },
+  } as ResolvedMatrixAccount["config"]);
+  const client = createClientForInboundTests();
+
+  await handleMatrixInboundEvent({
+    cfg,
+    account,
+    client,
+    roomHistory,
+    event: createInboundEvent({
+      eventId: "$buffered",
+      body: "buffer me",
+      timestamp: "2026-03-14T12:00:00.000Z",
+    }),
+  });
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$reset",
+        senderId: "@alice:example.org",
+        senderName: "Alice",
+        body: "@bot /new",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+        timestamp: "2026-03-14T12:01:00.000Z",
+      }),
+    }),
+    stopAfterRecord,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(ctx.MessageSid, "$reset");
+  assert.equal(ctx.InboundHistory, undefined);
+});
+
 test("batched room context can trigger from an earlier mention while preserving the final media subject", async () => {
   const stopAfterRecord = createRecordStopError();
   const recorded: Array<Record<string, unknown>> = [];
@@ -1869,6 +1948,11 @@ test("batched room context can trigger from an earlier mention while preserving 
         userId: "@bot:example.org",
         password: "secret",
         groupPolicy: "open",
+        rooms: {
+          "!room:example.org": {
+            users: ["@alice:example.org"],
+          },
+        },
       },
     },
   } as CoreConfig;
@@ -1877,6 +1961,11 @@ test("batched room context can trigger from an earlier mention while preserving 
     userId: "@bot:example.org",
     password: "secret",
     groupPolicy: "open",
+    rooms: {
+      "!room:example.org": {
+        users: ["@alice:example.org"],
+      },
+    },
   } as ResolvedMatrixAccount["config"]);
 
   await assert.rejects(
@@ -1940,6 +2029,109 @@ test("batched room context can trigger from an earlier mention while preserving 
   assert.equal(inboundHistory.length, 1);
   assert.equal(inboundHistory[0]?.sender, "Alice (alice)");
   assert.equal(inboundHistory[0]?.body, "@bot check this");
+});
+
+test("reset turns do not inherit earlier batched history or media fallback", async () => {
+  const stopAfterRecord = createRecordStopError();
+  const recorded: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime(
+    createRuntimeForInboundTests({
+      onRecordInboundSession: async (payload) => {
+        recorded.push(payload);
+        throw stopAfterRecord;
+      },
+      hasControlCommand: (body) => body.toLowerCase().includes("/new"),
+    }),
+  );
+  const roomHistory = createMatrixRoomHistoryBuffer(5);
+  const cfg = {
+    channels: {
+      matrix: {
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        password: "secret",
+        groupPolicy: "open",
+        rooms: {
+          "!room:example.org": {
+            autoReply: true,
+            users: ["@alice:example.org"],
+          },
+        },
+      },
+    },
+  } as CoreConfig;
+  const account = createResolvedAccount({
+    homeserver: "https://matrix.example.org",
+    userId: "@bot:example.org",
+    password: "secret",
+    groupPolicy: "open",
+    rooms: {
+      "!room:example.org": {
+        autoReply: true,
+        users: ["@alice:example.org"],
+      },
+    },
+  } as ResolvedMatrixAccount["config"]);
+  const client = {
+    ...createClientForInboundTests(),
+    mediaPathForInbound: async (params: { eventId?: string }) => {
+      if (params.eventId === "$earlier-image") {
+        return {
+          path: "/tmp/earlier.png",
+          contentType: "image/png",
+          kind: "image",
+          promptImage: {
+            type: "image" as const,
+            data: Buffer.from("earlier-image").toString("base64"),
+            mimeType: "image/png",
+          },
+        };
+      }
+      return undefined;
+    },
+  } as any;
+
+  await assert.rejects(
+    handleMatrixInboundEvent({
+      cfg,
+      account,
+      client,
+      roomHistory,
+      event: createInboundEvent({
+        eventId: "$reset-subject",
+        senderId: "@alice:example.org",
+        senderName: "Alice",
+        body: "@bot /new take notes",
+        mentions: {
+          userIds: ["@bot:example.org"],
+        },
+      }),
+      batchPreviousEvents: [
+        createInboundEvent({
+          eventId: "$earlier-image",
+          senderId: "@alice:example.org",
+          senderName: "Alice",
+          body: "earlier.png",
+          msgtype: "m.image",
+          media: [
+            {
+              index: 0,
+              kind: "image",
+              filename: "earlier.png",
+              contentType: "image/png",
+            },
+          ],
+        }),
+      ],
+    }),
+    stopAfterRecord,
+  );
+
+  const ctx = recorded[0]?.ctx as Record<string, unknown>;
+  assert.equal(ctx.MessageSid, "$reset-subject");
+  assert.equal(ctx.InboundHistory, undefined);
+  assert.equal(ctx.MediaPath, undefined);
+  assert.equal(ctx.MediaPaths, undefined);
 });
 
 test("auto-downloads SillyTavern card images and advertises card detection in history", async () => {
