@@ -60,12 +60,6 @@ const accountSchema = z.object({
   groups: z.object({}).catchall(roomSchema).optional(),
   rooms: z.object({}).catchall(roomSchema).optional(),
   actions: matrixActionsSchema,
-  userProfiles: z
-    .object({
-      enabled: z.boolean().optional(),
-      rootDir: z.string().optional(),
-    })
-    .optional(),
 });
 
 export const MatrixRustConfigSchema = accountSchema.extend({

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { MatrixNativeClient } from "./adapter/native-client.js";
-import { getMatrixRustRuntime, setPendingMatrixUserProfileHint } from "../runtime.js";
+import { getMatrixRustRuntime } from "../runtime.js";
 import {
   createReplyPrefixOptions,
   createScopedPairingAccess,
@@ -57,7 +57,6 @@ import {
   type MatrixReplyDispatchKind,
   type MatrixReplyPolicyScope,
 } from "./reply-policy.js";
-import { buildMatrixUserProfileHint } from "./user-profiles.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
@@ -1913,12 +1912,6 @@ export async function handleMatrixInboundEvent(params: {
     envelopeOptions,
     formatInboundEnvelope: runtime.channel.reply.formatInboundEnvelope,
   });
-  const userProfileHint = await buildMatrixUserProfileHint({
-    cfg,
-    accountConfig: account.config,
-    event,
-  });
-  setPendingMatrixUserProfileHint(route.sessionKey, userProfileHint);
   const senderUsername = presentation.senderUsername;
   const body = presentation.body;
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({

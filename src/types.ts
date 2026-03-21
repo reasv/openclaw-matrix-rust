@@ -32,11 +32,6 @@ export type MatrixRoomConfig = {
   threadReplies?: MatrixThreadRepliesMode;
 };
 
-export type MatrixUserProfilesConfig = {
-  enabled?: boolean;
-  rootDir?: string;
-};
-
 export type MatrixChannelAccountConfig = {
   name?: string;
   enabled?: boolean;
@@ -76,7 +71,6 @@ export type MatrixChannelAccountConfig = {
     memberInfo?: boolean;
     channelInfo?: boolean;
   };
-  userProfiles?: MatrixUserProfilesConfig;
 };
 
 export type MatrixChannelConfig = MatrixChannelAccountConfig & {
