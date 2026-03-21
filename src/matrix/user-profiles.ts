@@ -32,10 +32,10 @@ export async function buildMatrixUserProfileHint(params: {
 
   const prefix = "[User profile]";
   if (resolved.exists) {
-    return `${prefix} Available for this sender.`;
+    return `${prefix} Present for this sender.`;
   }
 
-  return `${prefix} None yet for this sender.`;
+  return `${prefix} Missing for this sender.`;
 }
 
 export async function resolveMatrixUserProfilePath(params: {

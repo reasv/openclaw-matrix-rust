@@ -57,7 +57,7 @@ test("buildMatrixUserProfileHint reports availability and disablement", async ()
     },
   });
 
-  assert.equal(hintMissing, "[User profile] None yet for this sender.");
+  assert.equal(hintMissing, "[User profile] Missing for this sender.");
 
   const hintDisabled = await buildMatrixUserProfileHint({
     cfg: {
@@ -107,5 +107,5 @@ test("buildMatrixUserProfileHint reports availability and disablement", async ()
     },
   });
 
-  assert.equal(hintPresent, "[User profile] Available for this sender.");
+  assert.equal(hintPresent, "[User profile] Present for this sender.");
 });
