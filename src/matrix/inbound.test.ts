@@ -611,7 +611,7 @@ test("includes saved workspace paths in attachment manifest text when present", 
     }),
     [
       "[Attachments: 1]",
-      '[Attachment 1] filename="photo.jpg" type="image/jpeg" saved to="./msg-attach/ABCDE12345.jpg"',
+      '[Attachment 1] filename="photo.jpg" type="image/jpeg" saved-to="./msg-attach/" saved-as="ABCDE12345.jpg" local-path-note="combine saved-to + saved-as"',
     ],
   );
 });
@@ -633,7 +633,7 @@ test("includes SillyTavern card detection in attachment manifest text when prese
     }),
     [
       "[Attachments: 1]",
-      '[Attachment 1] filename="hero.png" type="image/png" saved to="./msg-attach/ABCDE12345.png" detected="sillytavern-character-card" card_name="Hero Example"',
+      '[Attachment 1] filename="hero.png" type="image/png" saved-to="./msg-attach/" saved-as="ABCDE12345.png" local-path-note="combine saved-to + saved-as" detected="sillytavern-character-card" card_name="Hero Example"',
     ],
   );
 });
@@ -796,7 +796,7 @@ test("resolves reply attachment manifests and reply image media", async () => {
   assert.equal(replyContext.replyAttachmentTextBlocks[0], "[Reply attachments: 1]");
   assert.match(
     replyContext.replyAttachmentTextBlocks[1] ?? "",
-    /^\[Reply attachment 1\] filename="reply-photo\.png" type="image\/png" saved to="\.\/msg-attach\/[A-Z2-7]{10}\.png"$/,
+    /^\[Reply attachment 1\] filename="reply-photo\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="[A-Z2-7]{10}\.png" local-path-note="combine saved-to \+ saved-as"$/,
   );
   assert.deepEqual(replyContext.replyAttachmentMedia, [
     {
@@ -812,7 +812,7 @@ test("resolves reply attachment manifests and reply image media", async () => {
     },
   ]);
   const replySavedName = (replyContext.replyAttachmentTextBlocks[1] ?? "").match(
-    /saved to="\.\/msg-attach\/([^"]+)"/,
+    /saved-as="([^"]+)"/,
   )?.[1];
   assert.ok(replySavedName);
   const savedPath = path.join(workspaceDir, "msg-attach", replySavedName);
@@ -894,7 +894,7 @@ test("marks reply attachment manifests when the reply image is a SillyTavern car
   assert.equal(replyContext.replyAttachmentTextBlocks[0], "[Reply attachments: 1]");
   assert.match(
     replyContext.replyAttachmentTextBlocks[1] ?? "",
-    /^\[Reply attachment 1\] filename="hero\.png" type="image\/png" saved to="\.\/msg-attach\/[A-Z2-7]{10}\.png" detected="sillytavern-character-card" card_name="Hero Example"$/,
+    /^\[Reply attachment 1\] filename="hero\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="[A-Z2-7]{10}\.png" local-path-note="combine saved-to \+ saved-as" detected="sillytavern-character-card" card_name="Hero Example"$/,
   );
 });
 
@@ -1640,10 +1640,10 @@ test("auto-downloads room attachments into the agent workspace and advertises re
   assert.equal(inboundHistory[0]?.timestamp, Date.parse(bufferedTimestamp));
   assert.match(
     inboundHistory[0]?.body ?? "",
-    /^buffered image\n\[Attachments: 1\]\n\[Attachment 1\] filename="buffered\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)"$/,
+    /^buffered image\n\[Attachments: 1\]\n\[Attachment 1\] filename="buffered\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="([A-Z2-7]{10}\.png)" local-path-note="combine saved-to \+ saved-as"$/,
   );
   const savedName = (inboundHistory[0]?.body ?? "").match(
-    /saved to="\.\/msg-attach\/([^"]+)"/,
+    /saved-as="([^"]+)"/,
   )?.[1];
   assert.ok(savedName);
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
@@ -1725,10 +1725,10 @@ test("auto-downloads direct-message attachments into the agent workspace when sc
   const ctx = recorded[0]?.ctx as Record<string, unknown>;
   assert.match(
     String(ctx.BodyForAgent ?? ""),
-    /^look at this\n\[Attachments: 1\]\n\[Attachment 1\] filename="dm-photo\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)"\n\[Matrix event\] room="!dm:example\.org" event="\$dm-image"$/,
+    /^look at this\n\[Attachments: 1\]\n\[Attachment 1\] filename="dm-photo\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="([A-Z2-7]{10}\.png)" local-path-note="combine saved-to \+ saved-as"\n\[Matrix event\] room="!dm:example\.org" event="\$dm-image"$/,
   );
   const savedName = String(ctx.BodyForAgent ?? "").match(
-    /saved to="\.\/msg-attach\/([^"]+)"/,
+    /saved-as="([^"]+)"/,
   )?.[1];
   assert.ok(savedName);
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);
@@ -2039,10 +2039,10 @@ test("auto-downloads SillyTavern card images and advertises card detection in hi
   assert.equal(inboundHistory[0]?.timestamp, Date.parse(bufferedTimestamp));
   assert.match(
     inboundHistory[0]?.body ?? "",
-    /^buffered card\n\[Attachments: 1\]\n\[Attachment 1\] filename="hero\.png" type="image\/png" saved to="\.\/msg-attach\/([A-Z2-7]{10}\.png)" detected="sillytavern-character-card" card_name="Hero Example"$/,
+    /^buffered card\n\[Attachments: 1\]\n\[Attachment 1\] filename="hero\.png" type="image\/png" saved-to="\.\/msg-attach\/" saved-as="([A-Z2-7]{10}\.png)" local-path-note="combine saved-to \+ saved-as" detected="sillytavern-character-card" card_name="Hero Example"$/,
   );
   const savedName = (inboundHistory[0]?.body ?? "").match(
-    /saved to="\.\/msg-attach\/([^"]+)"/,
+    /saved-as="([^"]+)"/,
   )?.[1];
   assert.ok(savedName);
   const savedPath = path.join(workspaceDir, "msg-attach", savedName);

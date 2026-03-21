@@ -416,11 +416,14 @@ This behavior exists to make normal Matrix client usage "just work" more often w
 - Multiple Matrix media types are surfaced into the OpenClaw runtime.
 - Every inbound message now includes explicit attachment manifest text with filename and MIME type, including buffered history entries.
 - Attachments can be auto-downloaded into the agent workspace under `./msg-attach/` when `autoDownloadAttachmentMaxBytes` is enabled.
+- Attachment manifest text advertises downloaded files as split metadata such as `saved-to="./msg-attach/" saved-as="ABC123.png"` instead of a single direct image path.
+- This split format is intentional: agents can still reconstruct the local tool path when needed, but OpenClaw will not silently treat the manifest text itself as multimodal image input.
 - Current-message and direct-parent reply images can be passed to multimodal agent runs as raw image blocks.
 - Image handoff is configurable with `imageHandlingMode`:
   - `dual`: raw image blocks plus normal `MediaPaths`
   - `multimodal-only`: raw image blocks without image `MediaPaths`
   - `analysis-only`: image `MediaPaths` only, no raw image blocks
+- Regardless of mode, auto-downloaded attachment manifest text is for file/tool access, not an instruction to auto-inject old images into the model prompt.
 - Non-image attachment propagation into `MediaPaths` is separately controlled by `otherMediaPaths`.
 - Auto-download into `./msg-attach/` is controlled by `autoDownloadAttachmentMaxBytes`:
   - `0`: disabled

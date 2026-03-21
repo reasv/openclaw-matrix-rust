@@ -75,6 +75,27 @@ function resolveMatrixAttachmentType(entry: MatrixAttachmentTextEntry): string {
   return "application/octet-stream";
 }
 
+function resolveMatrixAttachmentSavedPathParts(savedTo: string): {
+  savedDir?: string;
+  savedAs?: string;
+} {
+  const trimmed = savedTo.trim();
+  if (!trimmed) {
+    return {};
+  }
+  const normalized = trimmed.replace(/\\/g, "/");
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex === -1) {
+    return { savedAs: quoteMatrixAttachmentValue(normalized) };
+  }
+  const savedDir = normalized.slice(0, slashIndex + 1);
+  const savedAs = normalized.slice(slashIndex + 1);
+  return {
+    savedDir: savedDir ? quoteMatrixAttachmentValue(savedDir) : undefined,
+    savedAs: savedAs ? quoteMatrixAttachmentValue(savedAs) : undefined,
+  };
+}
+
 export function buildMatrixAttachmentTextBlocks(params: {
   attachments?: MatrixAttachmentTextEntry[];
   heading?: string;
@@ -98,9 +119,12 @@ export function buildMatrixAttachmentTextBlocks(params: {
     const savedTo = entry.savedTo?.trim();
     const detected = entry.detected?.trim();
     const cardName = entry.cardName?.trim();
+    const savedPathParts = savedTo ? resolveMatrixAttachmentSavedPathParts(savedTo) : {};
     lines.push(
       `[${itemLabel} ${entry.index + 1}] filename="${resolveMatrixAttachmentFilename(entry)}" type="${resolveMatrixAttachmentType(entry)}"${
-        savedTo ? ` saved to="${quoteMatrixAttachmentValue(savedTo)}"` : ""
+        savedPathParts.savedDir ? ` saved-to="${savedPathParts.savedDir}"` : ""
+      }${savedPathParts.savedAs ? ` saved-as="${savedPathParts.savedAs}"` : ""}${
+        savedTo ? ` local-path-note="combine saved-to + saved-as"` : ""
       }${detected ? ` detected="${quoteMatrixAttachmentValue(detected)}"` : ""}${
         cardName ? ` card_name="${quoteMatrixAttachmentValue(cardName)}"` : ""
       }`,
