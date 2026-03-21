@@ -241,6 +241,148 @@ This section lists the behavior this connector actually implements today.
 - Startup grace filtering so stale sync events do not immediately trigger bot replies on boot.
 - Typing-backed reply dispatch and reaction acknowledgements in the OpenClaw flow.
 
+#### Reply anchoring and threading
+
+The connector treats Matrix thread placement and Matrix explicit replies as separate things.
+
+- `threadId` means "send this into a Matrix thread"
+- `replyToId` means "make this an explicit reply to this specific event"
+
+Those are related but not identical. A message can stay inside a Matrix thread without also being an explicit reply to the triggering event.
+
+This connector uses plugin-side policy to decide when a reply to the current triggering message should be kept, stripped, or added. That policy exists because the useful choice depends on room state that the model does not reliably know at send time, such as whether newer messages arrived while the agent was working or whether the outbound message is the first, middle, or final message in a multi-message reply sequence.
+
+The high-level rules are:
+
+- Explicit replies to a non-current event are always preserved.
+- Replies to the current triggering event are heuristic-driven.
+- `threadId` is preserved independently of reply stripping or reply insertion.
+
+This gives the model a strong escape hatch for intentional "reply to that earlier message" behavior, while keeping routine reply-to-current behavior deterministic and less spammy.
+
+##### Strong signal: explicit reply to an earlier message
+
+If the outbound payload targets a Matrix event that is not the event that triggered the current run, the connector always preserves it.
+
+That applies in:
+
+- DMs
+- normal rooms
+- thread conversations
+
+This is treated as a strong semantic signal. If the model deliberately targets some earlier event in context, the connector does not second-guess it.
+
+##### Current-target replies in DMs
+
+In DMs, replies to the current triggering message are always stripped.
+
+Reason:
+
+- in a 1:1 chat there is usually no ambiguity about what the bot is answering
+- repeated explicit replies are visually noisy
+- the connector still preserves explicit replies to some other earlier event if the model asked for that intentionally
+
+So in practice:
+
+- explicit reply to current: stripped
+- no reply target: left unset
+- explicit reply to some older message: preserved
+
+##### Current-target replies in rooms and threads
+
+For normal rooms and Matrix thread conversations, replies to the current triggering event are controlled by a positional heuristic.
+
+The connector classifies each outbound message in a reply run as one of:
+
+- `only`
+- `first`
+- `middle`
+- `last`
+
+It then checks whether the triggering event is still effectively the latest room activity from someone other than the bot.
+
+The resulting policy is:
+
+- `only`
+  - add or preserve a reply to current only if newer non-bot room activity exists
+- `first`
+  - add or preserve a reply to current only if newer non-bot room activity exists
+- `middle`
+  - never reply to current
+- `last`
+  - add or preserve a reply to current if newer non-bot room activity exists
+  - otherwise add or preserve a reply to current only if more than 30 seconds have passed since the triggering event
+
+This is meant to match human behavior more closely:
+
+- if the triggering message is still the latest relevant room activity, replying to it is usually redundant
+- the first message in a long bot run should anchor itself only when the room has already moved on
+- intermediate status/progress messages should not generate a wall of reply pills
+- the final answer can re-anchor when the room has moved or when enough time has passed that explicitly surfacing the result is useful
+
+##### Multi-message replies
+
+The connector supports live block-streamed output and end-of-run final payloads. Reply anchoring is applied across the whole outbound sequence, not per transport primitive.
+
+That means:
+
+- live intermediate messages are treated as `first` or `middle`
+- end-of-run payloads are classified so the connector can still distinguish `only` from `last`
+- intermediate progress updates generally do not keep replying to the same event repeatedly
+
+The connector uses a one-message rolling buffer for final payloads so it can identify the last final message without delaying the full reply set.
+
+##### How newer room activity is detected
+
+The connector tracks the latest inbound event for each room or thread scope before same-session work is queued. This matters because inbound handling is serialized per session, and without early tracking the active run would not notice newer same-room activity until after it finished.
+
+Practical effect:
+
+- if another user talks while the bot is still working, the final message can re-anchor to the original triggering message
+- this works even though the newer inbound event itself may still be waiting in the same per-session queue
+
+##### Model signals vs plugin policy
+
+The plugin deliberately does not leave reply-to-current behavior entirely to the model.
+
+- The model is authoritative when it explicitly targets a non-current event.
+- The plugin is authoritative for whether to reply to the current triggering event.
+
+This split is intentional:
+
+- omission of a current-target reply is not a strong signal
+- the model does not reliably know room freshness or outbound message position
+- the plugin does know those things
+
+As a result, the connector may add a reply to the current event even if the model did not emit one, and may strip a reply-to-current even if the model requested one.
+
+##### Interaction with Matrix thread delivery
+
+`threadReplies` still controls whether the connector should keep delivery inside a Matrix thread.
+
+That is separate from whether the message is also rendered as an explicit reply to a particular event.
+
+So for thread conversations:
+
+- the connector can preserve thread placement
+- while still suppressing unnecessary reply-to-current noise inside the thread
+- and still preserving explicit replies to older thread events when the model intentionally targets them
+
+##### Practical examples
+
+- DM, one answer, no special target:
+  - no explicit reply is sent
+- Room, one answer, no one else has spoken:
+  - no explicit reply is sent
+- Room, first progress update after other users already spoke:
+  - the first progress message replies to the triggering event
+- Room, several progress updates:
+  - middle progress messages do not keep replying
+- Room, final answer after 45 seconds with no newer non-bot messages:
+  - the final message may reply to wake the user up
+- Model explicitly targets an older event in room history:
+  - that reply target is preserved regardless of the current-target heuristic
+
 #### Inbound batching
 
 Matrix clients frequently split what the user thinks of as one action into multiple adjacent events. Common examples include:
@@ -270,6 +412,7 @@ This behavior exists to make normal Matrix client usage "just work" more often w
 - Outbound sends support plain messages, replies, and thread-aware sends.
 - Room target resolution and room join are implemented in the native core.
 - Media upload and download are implemented in Rust, with handoff to OpenClaw on the TS side.
+- Outbound attachment captions are sent as separate text follow-up messages instead of inline media captions, so Matrix clients that derive download names from media `body` fields keep stable filenames across image, file, audio, and video sends.
 - Multiple Matrix media types are surfaced into the OpenClaw runtime.
 - Every inbound message now includes explicit attachment manifest text with filename and MIME type, including buffered history entries.
 - Attachments can be auto-downloaded into the agent workspace under `./msg-attach/` when `autoDownloadAttachmentMaxBytes` is enabled.
