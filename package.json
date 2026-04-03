@@ -19,7 +19,7 @@
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4",
     "@types/node": "^22.15.0",
-    "openclaw": "file:../openclaw",
+    "openclaw": "link:../openclaw",
     "tsx": "^4.20.5",
     "typescript": "^5.8.2"
   },

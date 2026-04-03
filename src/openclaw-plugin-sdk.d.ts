@@ -270,7 +270,7 @@ declare module "openclaw/plugin-sdk/matrix" {
     onModelSelected?: (...args: unknown[]) => void;
     [key: string]: unknown;
   };
-  export function createScopedPairingAccess(params: Record<string, unknown>): {
+  export function createChannelPairingController(params: Record<string, unknown>): {
     accountId: string;
     readAllowFromStore: () => Promise<string[]>;
     readStoreForDmPolicy: (provider: string, accountId: string) => Promise<string[]>;
@@ -278,16 +278,13 @@ declare module "openclaw/plugin-sdk/matrix" {
       id: string;
       meta?: Record<string, string | undefined>;
     }) => Promise<{ code: string; created: boolean }>;
+    issueChallenge: (params: Record<string, unknown>) => Promise<unknown>;
   };
   export function createTypingCallbacks(params: Record<string, unknown>): {
     onReplyStart: () => Promise<void>;
     onIdle?: () => void;
     onCleanup?: () => void;
   };
-  export function dispatchReplyFromConfigWithSettledDispatcher(params: Record<string, unknown>): Promise<{
-    queuedFinal: boolean;
-    counts: { final: number };
-  }>;
   export function evaluateGroupRouteAccessForPolicy(params: Record<string, unknown>): {
     allowed: boolean;
     reason: string;
@@ -313,13 +310,6 @@ declare module "openclaw/plugin-sdk/matrix" {
     key?: string;
     wildcardEntry?: unknown;
     wildcardKey?: string;
-  };
-  export function issuePairingChallenge(params: Record<string, unknown>): Promise<void>;
-  export function readStoreAllowFromForDmPolicy(params: Record<string, unknown>): Promise<string[]>;
-  export function resolveDmGroupAccessWithLists(params: Record<string, unknown>): {
-    decision: "allow" | "block" | "pairing";
-    effectiveAllowFrom: string[];
-    effectiveGroupAllowFrom: string[];
   };
   export function resolveAllowlistMatchByCandidates(params: Record<string, unknown>): AllowlistMatch;
 }

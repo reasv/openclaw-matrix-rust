@@ -3,11 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { MatrixNativeClient } from "./adapter/native-client.js";
 import { getMatrixRustRuntime } from "../runtime.js";
+import { dispatchReplyFromConfigWithSettledDispatcher } from "openclaw/plugin-sdk/matrix-runtime-heavy";
 import {
+  createChannelPairingController,
   createReplyPrefixOptions,
-  createScopedPairingAccess,
   createTypingCallbacks,
-  dispatchReplyFromConfigWithSettledDispatcher,
   evaluateGroupRouteAccessForPolicy,
   formatAllowlistMatchMeta,
   logInboundDrop,
@@ -1607,7 +1607,7 @@ export async function handleMatrixInboundEvent(params: {
     }
   }
 
-  const pairing = createScopedPairingAccess({
+  const pairing = createChannelPairingController({
     core: runtime,
     channel: "matrix",
     accountId: account.accountId,
@@ -1633,6 +1633,7 @@ export async function handleMatrixInboundEvent(params: {
       senderName,
       effectiveAllowFrom,
       upsertPairingRequest: pairing.upsertPairingRequest,
+      issuePairingChallenge: pairing.issueChallenge,
       sendPairingReply: async (text) => {
         client.sendMessage({
           roomId: event.roomId,
@@ -2154,7 +2155,7 @@ export async function handleMatrixInboundEvent(params: {
     });
 
   const { queuedFinal, counts } = await dispatchReplyFromConfigWithSettledDispatcher({
-    cfg,
+    cfg: cfg as any,
     ctxPayload,
     dispatcher,
     onSettled: async () => {

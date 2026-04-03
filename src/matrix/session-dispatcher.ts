@@ -1,4 +1,4 @@
-import { KeyedAsyncQueue } from "openclaw/plugin-sdk";
+import { KeyedAsyncQueue } from "openclaw/plugin-sdk/core";
 
 type WaitForIdleOptions = {
   timeoutMs?: number;

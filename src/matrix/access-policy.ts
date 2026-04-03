@@ -1,9 +1,10 @@
 import {
   formatAllowlistMatchMeta,
-  issuePairingChallenge,
+} from "openclaw/plugin-sdk/matrix";
+import {
   readStoreAllowFromForDmPolicy,
   resolveDmGroupAccessWithLists,
-} from "openclaw/plugin-sdk/matrix";
+} from "openclaw/plugin-sdk/channel-policy";
 import {
   normalizeMatrixAllowList,
   resolveMatrixAllowListMatch,
@@ -76,6 +77,15 @@ export async function enforceMatrixDirectMessageAccess(params: {
     code: string;
     created: boolean;
   }>;
+  issuePairingChallenge: (params: {
+    senderId: string;
+    senderIdLine: string;
+    meta?: Record<string, string | undefined>;
+    buildReplyText: (params: { code: string }) => string;
+    sendPairingReply: (text: string) => Promise<void>;
+    onCreated?: () => void;
+    onReplyError?: (err: unknown) => void;
+  }) => Promise<unknown>;
   sendPairingReply: (text: string) => Promise<void>;
   logVerboseMessage: (message: string) => void;
 }): Promise<boolean> {
@@ -91,12 +101,10 @@ export async function enforceMatrixDirectMessageAccess(params: {
   });
   const allowMatchMeta = formatAllowlistMatchMeta(allowMatch);
   if (params.accessDecision === "pairing") {
-    await issuePairingChallenge({
-      channel: "matrix",
+    await params.issuePairingChallenge({
       senderId: params.senderId,
       senderIdLine: `Matrix user id: ${params.senderId}`,
       meta: { name: params.senderName },
-      upsertPairingRequest: params.upsertPairingRequest,
       buildReplyText: ({ code }: { code: string }) =>
         [
           "OpenClaw: access not configured.",
