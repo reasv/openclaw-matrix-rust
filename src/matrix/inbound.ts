@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import type { MatrixNativeClient } from "./adapter/native-client.js";
 import { getMatrixRustRuntime } from "../runtime.js";
 import { dispatchReplyFromConfigWithSettledDispatcher } from "openclaw/plugin-sdk/matrix-runtime-heavy";
@@ -61,6 +62,13 @@ import {
 import { resolveMatrixRoomConfig } from "./rooms.js";
 
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
+const MATRIX_OUTBOUND_THUMBNAIL_MIN_BYTES = 800 * 1024;
+const MATRIX_OUTBOUND_THUMBNAIL_TARGET_MAX_BYTES = 256 * 1024;
+const MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE = 800;
+const MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE = 400;
+const MATRIX_OUTBOUND_THUMBNAIL_SCALE_CANDIDATES = [1, 0.75, 0.5] as const;
+const MATRIX_OUTBOUND_THUMBNAIL_STATIC_QUALITY_CANDIDATES = [70, 60, 50] as const;
+const MATRIX_OUTBOUND_THUMBNAIL_ANIMATED_QUALITY_CANDIDATES = [60, 50, 40] as const;
 
 type PromptImageContent = {
   type: "image";
@@ -91,6 +99,14 @@ type MatrixOutboundLocalMediaLoadOptions = {
   localRoots?: readonly string[];
   readFile?: (filePath: string) => Promise<Buffer>;
   workspaceDir?: string;
+};
+
+type MatrixUploadMediaThumbnail = {
+  dataBase64: string;
+  contentType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
 };
 
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
@@ -306,6 +322,124 @@ function buildMatrixOutboundLocalMediaLoadOptions(params: {
     ...(params.mediaAccess?.readFile ? { readFile: params.mediaAccess.readFile } : {}),
     ...(params.mediaAccess?.workspaceDir ? { workspaceDir: params.mediaAccess.workspaceDir } : {}),
   };
+}
+
+function isMatrixThumbnailEligibleImage(params: {
+  contentType?: string;
+  fileName?: string;
+}): boolean {
+  const mime = params.contentType?.trim().toLowerCase();
+  if (mime?.startsWith("image/")) {
+    return true;
+  }
+  const ext = path.extname(params.fileName?.trim() ?? "").toLowerCase();
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".heic", ".heif", ".svg"].includes(ext);
+}
+
+function sanitizePositiveInteger(value: number | null | undefined): number | undefined {
+  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : undefined;
+}
+
+async function renderMatrixThumbnailCandidate(params: {
+  buffer: Buffer;
+  animated: boolean;
+  maxWidth: number;
+  maxHeight: number;
+  quality: number;
+}): Promise<MatrixUploadMediaThumbnail | null> {
+  const pipeline = sharp(params.buffer, { animated: params.animated }).rotate().resize({
+    width: params.maxWidth,
+    height: params.maxHeight,
+    fit: "inside",
+    withoutEnlargement: true,
+  });
+  const outputBuffer = await pipeline.webp({
+    quality: params.quality,
+    alphaQuality: params.quality,
+    effort: 4,
+    ...(params.animated ? { loop: 0 } : {}),
+  }).toBuffer();
+  const metadata = await sharp(outputBuffer, { animated: params.animated }).metadata();
+  const width = sanitizePositiveInteger(metadata.width);
+  const height = sanitizePositiveInteger(metadata.pageHeight ?? metadata.height);
+  if (!width || !height) {
+    return null;
+  }
+  return {
+    dataBase64: outputBuffer.toString("base64"),
+    contentType: "image/webp",
+    width,
+    height,
+    sizeBytes: outputBuffer.length,
+  };
+}
+
+export async function maybeBuildMatrixUploadThumbnail(params: {
+  buffer: Buffer;
+  contentType?: string;
+  fileName?: string;
+  minSourceBytes?: number;
+  targetMaxBytes?: number;
+}): Promise<MatrixUploadMediaThumbnail | undefined> {
+  if (!isMatrixThumbnailEligibleImage(params)) {
+    return undefined;
+  }
+  const minSourceBytes = params.minSourceBytes ?? MATRIX_OUTBOUND_THUMBNAIL_MIN_BYTES;
+  if (params.buffer.length < minSourceBytes) {
+    return undefined;
+  }
+
+  try {
+    const sourceMetadata = await sharp(params.buffer, { animated: true }).metadata();
+    if (!sourceMetadata.format) {
+      return undefined;
+    }
+    const sourceWidth = sanitizePositiveInteger(sourceMetadata.width);
+    const sourceHeight = sanitizePositiveInteger(sourceMetadata.pageHeight ?? sourceMetadata.height);
+    if (!sourceWidth || !sourceHeight) {
+      return undefined;
+    }
+    const animated = (sourceMetadata.pages ?? 1) > 1;
+    const qualityCandidates = animated
+      ? MATRIX_OUTBOUND_THUMBNAIL_ANIMATED_QUALITY_CANDIDATES
+      : MATRIX_OUTBOUND_THUMBNAIL_STATIC_QUALITY_CANDIDATES;
+    const targetMaxBytes = params.targetMaxBytes ?? MATRIX_OUTBOUND_THUMBNAIL_TARGET_MAX_BYTES;
+    const isLandscape = sourceWidth >= sourceHeight;
+    const baseMaxWidth = isLandscape
+      ? MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE
+      : MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE;
+    const baseMaxHeight = isLandscape
+      ? MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE
+      : MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE;
+    let smallest: MatrixUploadMediaThumbnail | undefined;
+
+    for (const scale of MATRIX_OUTBOUND_THUMBNAIL_SCALE_CANDIDATES) {
+      const maxWidth = Math.max(1, Math.round(baseMaxWidth * scale));
+      const maxHeight = Math.max(1, Math.round(baseMaxHeight * scale));
+      for (const quality of qualityCandidates) {
+        const candidate = await renderMatrixThumbnailCandidate({
+          buffer: params.buffer,
+          animated,
+          maxWidth,
+          maxHeight,
+          quality,
+        });
+        if (!candidate) {
+          continue;
+        }
+        if (!smallest || candidate.sizeBytes < smallest.sizeBytes) {
+          smallest = candidate;
+        }
+        if (candidate.sizeBytes <= targetMaxBytes) {
+          return candidate;
+        }
+      }
+    }
+
+    return smallest;
+  } catch {
+    return undefined;
+  }
 }
 
 function isMatrixImageKind(kind?: string): boolean {
@@ -1338,6 +1472,11 @@ export async function sendMatrixMedia(params: {
     mediaLocalRoots: params.mediaLocalRoots,
     runtime,
   });
+  const thumbnail = await maybeBuildMatrixUploadThumbnail({
+    buffer: loaded.buffer,
+    contentType: loaded.contentType,
+    fileName: loaded.fileName,
+  });
   const captionText = params.text?.trim() ? params.text : undefined;
   const shouldSendCaptionAsSeparateMessage = Boolean(captionText);
   const result = params.client.uploadMedia({
@@ -1345,6 +1484,7 @@ export async function sendMatrixMedia(params: {
     filename: loaded.fileName ?? "attachment",
     contentType: loaded.contentType ?? "application/octet-stream",
     dataBase64: loaded.buffer.toString("base64"),
+    ...(thumbnail ? { thumbnail } : {}),
     caption: shouldSendCaptionAsSeparateMessage ? undefined : (params.text ?? undefined),
     replyToId: params.replyToId ?? undefined,
     threadId: params.threadId ?? undefined,

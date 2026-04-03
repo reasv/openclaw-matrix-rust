@@ -2,20 +2,20 @@ use std::str::FromStr;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use matrix_sdk::{
-    attachment::AttachmentConfig,
+    attachment::{AttachmentConfig, Thumbnail},
     room::reply::{EnforceThread, Reply},
     ruma::{
         events::{
             room::message::{MessageType, ReplyWithinThread},
             AnySyncMessageLikeEvent, AnySyncTimelineEvent,
         },
-        EventId, OwnedEventId,
+        EventId, OwnedEventId, UInt,
     },
     Room,
 };
 
 use crate::{
-    api::{MatrixDownloadMediaResult, MatrixMediaKind, MatrixUploadMediaRequest},
+    api::{MatrixDownloadMediaResult, MatrixMediaKind, MatrixUploadMediaRequest, MatrixUploadMediaThumbnail},
     MatrixError, MatrixResult,
 };
 
@@ -61,16 +61,49 @@ pub async fn upload_media(room: &Room, request: &MatrixUploadMediaRequest) -> Ma
     let data = STANDARD
         .decode(request.data_base64.trim())
         .map_err(|err| MatrixError::State(format!("invalid base64 media payload: {err}")))?;
+    let thumbnail = request
+        .thumbnail
+        .as_ref()
+        .map(parse_thumbnail)
+        .transpose()?;
     let reply = build_reply(request.reply_to_id.as_deref(), request.thread_id.as_deref())?;
     let caption = request
         .caption
         .as_deref()
         .map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
-    let config = AttachmentConfig::new().caption(caption).reply(reply);
+    let config = AttachmentConfig::new()
+        .thumbnail(thumbnail)
+        .caption(caption)
+        .reply(reply);
     let response = room
         .send_attachment(&request.filename, &content_type, data, config)
         .await?;
     Ok(response.event_id.to_string())
+}
+
+fn parse_thumbnail(thumbnail: &MatrixUploadMediaThumbnail) -> MatrixResult<Thumbnail> {
+    let content_type = mime::Mime::from_str(thumbnail.content_type.trim()).map_err(|err| {
+        MatrixError::State(format!(
+            "invalid thumbnail content_type {}: {err}",
+            thumbnail.content_type
+        ))
+    })?;
+    let data = STANDARD
+        .decode(thumbnail.data_base64.trim())
+        .map_err(|err| MatrixError::State(format!("invalid base64 thumbnail payload: {err}")))?;
+    let width = UInt::try_from(u64::from(thumbnail.width))
+        .map_err(|_| MatrixError::State("invalid thumbnail width".to_string()))?;
+    let height = UInt::try_from(u64::from(thumbnail.height))
+        .map_err(|_| MatrixError::State("invalid thumbnail height".to_string()))?;
+    let size = UInt::try_from(thumbnail.size_bytes)
+        .map_err(|_| MatrixError::State("invalid thumbnail size".to_string()))?;
+    Ok(Thumbnail {
+        data,
+        content_type,
+        width,
+        height,
+        size,
+    })
 }
 
 async fn download_media_from_message(

@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import sharp from "sharp";
 
 import {
   clearMatrixFlushedEventDedupes,
@@ -16,6 +18,7 @@ import {
   extractMatrixCustomEmojiUsageFromFormattedBody,
   filterMatrixMediaForContext,
   handleMatrixInboundEvent,
+  maybeBuildMatrixUploadThumbnail,
   resolveMatrixBatchMediaSelection,
   resolveMatrixInboundRoute,
   resolveMatrixReplyContext,
@@ -44,6 +47,10 @@ const TINY_CARD_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVR4nGP4z8DwHx9mGBkKAMLXf4EvceABAAAAUnRFWHRjaGFyYQBleUp6Y0dWaklqb2lZMmhoY21GZlkyRnlaRjkyTWlJc0ltUmhkR0VpT25zaWJtRnRaU0k2SWtobGNtOGdSWGhoYlhCc1pTSjlmUT09p6SKxQAAAABJRU5ErkJggg==",
   "base64",
 );
+const TINY_ANIMATED_GIF = Buffer.from(
+  "R0lGODlhCAAIAPAAAP8AAP///yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACH/C0ltYWdlTWFnaWNrDmdhbW1hPTAuNDU0NTQ1ACwAAAAACAAIAAACB4SPqcvtXQAAIfkEAAoAAAAh/wtJbWFnZU1hZ2ljaw5nYW1tYT0wLjQ1NDU0NQAsAAAAAAgACACAAIAA////AgeEj6nL7V0AADs=",
+  "base64",
+);
 
 function createResolvedAccount(
   config: ResolvedMatrixAccount["config"] = {
@@ -61,6 +68,17 @@ function createResolvedAccount(
     authMode: "password",
     config,
   };
+}
+
+async function createLargeNoisePng(params: { width: number; height: number }) {
+  const raw = crypto.randomBytes(params.width * params.height * 3);
+  return await sharp(raw, {
+    raw: {
+      width: params.width,
+      height: params.height,
+      channels: 3,
+    },
+  }).png().toBuffer();
 }
 
 function createRecordStopError() {
@@ -996,6 +1014,48 @@ test("resolves thread starter context for a new thread session", async () => {
   });
 });
 
+test("maybeBuildMatrixUploadThumbnail skips small images and thumbnails large images to 800x400 bounds", async () => {
+  const smallThumbnail = await maybeBuildMatrixUploadThumbnail({
+    buffer: TINY_PNG,
+    contentType: "image/png",
+    fileName: "tiny.png",
+  });
+  assert.equal(smallThumbnail, undefined);
+
+  const largePng = await createLargeNoisePng({ width: 1600, height: 1200 });
+  assert.ok(largePng.length > 800 * 1024);
+  const thumbnail = await maybeBuildMatrixUploadThumbnail({
+    buffer: largePng,
+    contentType: "image/png",
+    fileName: "large.png",
+  });
+
+  assert.ok(thumbnail);
+  assert.equal(thumbnail?.contentType, "image/webp");
+  assert.ok(thumbnail!.sizeBytes > 0);
+  const metadata = await sharp(Buffer.from(thumbnail!.dataBase64, "base64"), { animated: true }).metadata();
+  assert.equal(metadata.format, "webp");
+  assert.equal(metadata.width, thumbnail!.width);
+  assert.equal(metadata.pageHeight ?? metadata.height, thumbnail!.height);
+  assert.ok(thumbnail!.width <= 800);
+  assert.ok(thumbnail!.height <= 400);
+});
+
+test("maybeBuildMatrixUploadThumbnail renders animated webp thumbnails for animated gifs", async () => {
+  const thumbnail = await maybeBuildMatrixUploadThumbnail({
+    buffer: TINY_ANIMATED_GIF,
+    contentType: "image/gif",
+    fileName: "tiny.gif",
+    minSourceBytes: 1,
+  });
+
+  assert.ok(thumbnail);
+  assert.equal(thumbnail?.contentType, "image/webp");
+  const metadata = await sharp(Buffer.from(thumbnail!.dataBase64, "base64"), { animated: true }).metadata();
+  assert.equal(metadata.format, "webp");
+  assert.ok((metadata.pages ?? 1) > 1);
+});
+
 test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async () => {
   const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-local-"));
   const mediaPath = path.join(workspaceDir, "render.png");
@@ -1142,6 +1202,64 @@ test("sendMatrixMedia forwards workspace-aware mediaAccess for relative media pa
       threadId: undefined,
     },
   ]);
+});
+
+test("sendMatrixMedia includes thumbnails for large image attachments", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-thumb-"));
+  await fs.mkdir(path.join(workspaceDir, "images"), { recursive: true });
+  const largePng = await createLargeNoisePng({ width: 1600, height: 1200 });
+  assert.ok(largePng.length > 800 * 1024);
+  const mediaPath = path.join(workspaceDir, "images", "large.png");
+  await fs.writeFile(mediaPath, largePng);
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+
+  setMatrixRustRuntime({
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+
+  await sendMatrixMedia({
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$thumb",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+      sendMessage: () => {
+        throw new Error("unexpected sendMessage");
+      },
+    } as any,
+    to: "!room:example.org",
+    mediaUrl: mediaPath,
+    mediaLocalRoots: [workspaceDir],
+  });
+
+  assert.equal(uploadMediaCalls.length, 1);
+  const thumbnail = uploadMediaCalls[0]?.thumbnail as
+    | {
+        dataBase64: string;
+        contentType: string;
+        width: number;
+        height: number;
+        sizeBytes: number;
+      }
+    | undefined;
+  assert.ok(thumbnail);
+  assert.equal(thumbnail?.contentType, "image/webp");
+  assert.ok(thumbnail!.width <= 800);
+  assert.ok(thumbnail!.height <= 400);
+  const metadata = await sharp(Buffer.from(thumbnail!.dataBase64, "base64"), { animated: true }).metadata();
+  assert.equal(metadata.format, "webp");
 });
 
 test("sendMatrixMedia preserves raw SillyTavern card PNG metadata", async () => {

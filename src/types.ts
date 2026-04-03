@@ -326,11 +326,20 @@ export type MatrixChannelInfo = {
   memberCount?: number;
 };
 
+export type MatrixUploadMediaThumbnail = {
+  dataBase64: string;
+  contentType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+};
+
 export type MatrixUploadMediaRequest = {
   roomId: string;
   filename: string;
   contentType: string;
   dataBase64: string;
+  thumbnail?: MatrixUploadMediaThumbnail;
   caption?: string;
   replyToId?: string;
   threadId?: string;

@@ -348,11 +348,22 @@ pub struct MatrixChannelInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MatrixUploadMediaThumbnail {
+    pub data_base64: String,
+    pub content_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatrixUploadMediaRequest {
     pub room_id: String,
     pub filename: String,
     pub content_type: String,
     pub data_base64: String,
+    pub thumbnail: Option<MatrixUploadMediaThumbnail>,
     pub caption: Option<String>,
     pub reply_to_id: Option<String>,
     pub thread_id: Option<String>,
