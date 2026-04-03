@@ -10,6 +10,10 @@ import { sendMatrixMedia } from "./matrix/inbound.js";
 import type { CoreConfig, MatrixReactionSummary, ResolvedMatrixAccount } from "./types.js";
 
 export const matrixRustActions: ChannelMessageActionAdapter = {
+  describeMessageTool: ({ cfg, accountId }) => ({
+    actions: matrixRustActions.listActions({ cfg, accountId }),
+    capabilities: [],
+  }),
   listActions: ({ cfg }) => {
     const account = resolveMatrixRustAccount({ cfg: cfg as CoreConfig });
     if (!account.enabled || !account.configured) {

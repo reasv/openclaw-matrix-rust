@@ -1083,6 +1083,98 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
   ]);
 });
 
+test("sendMatrixMedia forwards workspace-aware mediaAccess for relative media paths", async () => {
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
+  const readFile = async (_filePath: string) => Buffer.from("workspace-image");
+
+  setMatrixRustRuntime({
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("workspace-image"),
+          contentType: "image/png",
+          fileName: "land-dolphin.png",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+
+  const result = await sendMatrixMedia({
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$media",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+      sendMessage: (request: Record<string, unknown>) => {
+        sendMessageCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$caption",
+        };
+      },
+    } as any,
+    to: "!room:example.org",
+    mediaUrl: "cards/sillytavern/land-dolphin.png",
+    mediaAccess: {
+      localRoots: ["/tmp/workspace-agent"],
+      readFile,
+      workspaceDir: "/tmp/workspace-agent",
+    },
+    text: "caption",
+  });
+
+  assert.deepEqual(result, {
+    channel: "matrix",
+    to: "!room:example.org",
+    messageId: "$media",
+  });
+  assert.deepEqual(loadWebMediaCalls, [
+    {
+      mediaUrl: "cards/sillytavern/land-dolphin.png",
+      options: {
+        maxBytes: 20 * 1024 * 1024,
+        localRoots: ["/tmp/workspace-agent"],
+        readFile,
+        workspaceDir: "/tmp/workspace-agent",
+      },
+    },
+  ]);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "land-dolphin.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("workspace-image").toString("base64"),
+      caption: undefined,
+      replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "caption",
+      threadId: undefined,
+    },
+  ]);
+});
+
 test("sendMatrixMedia keeps remote URL loading on the remote fetch path", async () => {
   const loadWebMediaCalls: unknown[] = [];
   const fetchRemoteMediaCalls: Array<Record<string, unknown>> = [];

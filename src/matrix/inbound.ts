@@ -1253,10 +1253,15 @@ async function recordInboundEmojiUsage(params: {
 async function loadOutboundMedia(params: {
   mediaUrl: string;
   maxBytes: number;
+  mediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
   mediaLocalRoots?: readonly string[];
   runtime: any;
 }): Promise<{ buffer: Buffer; contentType?: string; fileName?: string }> {
-  const { mediaUrl, maxBytes, mediaLocalRoots, runtime } = params;
+  const { mediaUrl, maxBytes, mediaAccess, mediaLocalRoots, runtime } = params;
   if (/^https?:\/\//i.test(mediaUrl)) {
     const loaded = await runtime.channel.media.fetchRemoteMedia({
       url: mediaUrl,
@@ -1271,7 +1276,11 @@ async function loadOutboundMedia(params: {
 
   const loaded = await runtime.media.loadWebMedia(mediaUrl, {
     maxBytes,
-    localRoots: mediaLocalRoots,
+    ...(mediaAccess?.localRoots ?? mediaLocalRoots
+      ? { localRoots: mediaAccess?.localRoots ?? mediaLocalRoots }
+      : {}),
+    ...(mediaAccess?.readFile ? { readFile: mediaAccess.readFile } : {}),
+    ...(mediaAccess?.workspaceDir ? { workspaceDir: mediaAccess.workspaceDir } : {}),
   });
   return {
     buffer: Buffer.from(loaded.buffer),
@@ -1286,6 +1295,11 @@ export async function sendMatrixMedia(params: {
   to: string;
   mediaUrl: string;
   text?: string;
+  mediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
   mediaLocalRoots?: readonly string[];
   replyToId?: string;
   threadId?: string;
@@ -1295,6 +1309,7 @@ export async function sendMatrixMedia(params: {
   const loaded = await loadOutboundMedia({
     mediaUrl: params.mediaUrl,
     maxBytes,
+    mediaAccess: params.mediaAccess,
     mediaLocalRoots: params.mediaLocalRoots,
     runtime,
   });

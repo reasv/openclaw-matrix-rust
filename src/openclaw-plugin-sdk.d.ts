@@ -1,4 +1,10 @@
 declare module "openclaw/plugin-sdk/matrix" {
+  export type OutboundMediaAccess = {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
+
   export type DmPolicy = "open" | "allowlist" | "pairing" | "disabled";
   export type GroupPolicy = "open" | "allowlist" | "blocked" | "disabled";
   export type GroupToolPolicyConfig = Record<string, unknown>;
@@ -85,6 +91,12 @@ declare module "openclaw/plugin-sdk/matrix" {
     to: string;
   };
 
+  export type ChannelMessageToolDiscovery = {
+    actions?: ChannelMessageActionName[];
+    capabilities?: string[];
+    schema?: Record<string, unknown> | null;
+  };
+
   export type ChannelMessageActionContext = {
     action: ChannelMessageActionName;
     params: Record<string, unknown>;
@@ -94,6 +106,18 @@ declare module "openclaw/plugin-sdk/matrix" {
   };
 
   export type ChannelMessageActionAdapter = {
+    describeMessageTool?: (params: {
+      cfg: OpenClawConfig;
+      currentChannelId?: string | null;
+      currentChannelProvider?: string | null;
+      currentThreadTs?: string | null;
+      currentMessageId?: string | number | null;
+      accountId?: string | null;
+      sessionKey?: string | null;
+      sessionId?: string | null;
+      agentId?: string | null;
+      requesterSenderId?: string | null;
+    }) => ChannelMessageToolDiscovery | null;
     listActions: (params: {
       cfg: OpenClawConfig;
       accountId?: string | null;
@@ -194,6 +218,7 @@ declare module "openclaw/plugin-sdk/matrix" {
         to: string;
         mediaUrl: string;
         text?: string | null;
+        mediaAccess?: OutboundMediaAccess;
         mediaLocalRoots?: readonly string[];
         replyToId?: string | null;
         threadId?: string | number | null;

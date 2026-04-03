@@ -135,6 +135,30 @@ test("lists the full action surface when all families are enabled", () => {
   ]);
 });
 
+test("describeMessageTool exposes the current action surface", () => {
+  const discovery = matrixRustActions.describeMessageTool?.({
+    cfg: baseConfig,
+  });
+
+  assert.deepEqual(discovery, {
+    actions: [
+      "send",
+      "emoji-list",
+      "react",
+      "reactions",
+      "read",
+      "edit",
+      "delete",
+      "pin",
+      "unpin",
+      "list-pins",
+      "member-info",
+      "channel-info",
+    ],
+    capabilities: [],
+  });
+});
+
 test("omits gated action families from the advertised list", () => {
   const actions = matrixRustActions.listActions({
     cfg: {
