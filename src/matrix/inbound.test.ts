@@ -32,11 +32,16 @@ import {
   resolveMatrixReadableBody,
 } from "./inbound-format.js";
 import { createMatrixRoomHistoryBuffer } from "./history-buffer.js";
+import { detectSillyTavernCardFromBuffer } from "./sillytavern-card-detect.js";
 import type { CoreConfig, MatrixInboundEvent, ResolvedMatrixAccount } from "../types.js";
 import { setMatrixRustRuntime } from "../runtime.js";
 
 const TINY_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+  "base64",
+);
+const TINY_CARD_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVR4nGP4z8DwHx9mGBkKAMLXf4EvceABAAAAUnRFWHRjaGFyYQBleUp6Y0dWaklqb2lZMmhoY21GZlkyRnlaRjkyTWlJc0ltUmhkR0VpT25zaWJtRnRaU0k2SWtobGNtOGdSWGhoYlhCc1pTSjlmUT09p6SKxQAAAABJRU5ErkJggg==",
   "base64",
 );
 
@@ -992,22 +997,14 @@ test("resolves thread starter context for a new thread session", async () => {
 });
 
 test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async () => {
-  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-local-"));
+  const mediaPath = path.join(workspaceDir, "render.png");
+  await fs.writeFile(mediaPath, TINY_PNG);
   const fetchRemoteMediaCalls: unknown[] = [];
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   const sendMessageCalls: Array<Record<string, unknown>> = [];
 
   setMatrixRustRuntime({
-    media: {
-      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
-        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
-        return {
-          buffer: Buffer.from("local-image"),
-          contentType: "image/png",
-          fileName: "render.png",
-        };
-      },
-    },
     channel: {
       media: {
         fetchRemoteMedia: async (params: unknown) => {
@@ -1043,8 +1040,8 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
       },
     } as any,
     to: "!room:example.org",
-    mediaUrl: "/tmp/workspace-agent/out/render.png",
-    mediaLocalRoots: ["/tmp/workspace-agent"],
+    mediaUrl: mediaPath,
+    mediaLocalRoots: [workspaceDir],
     text: "caption",
   });
 
@@ -1053,22 +1050,13 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
     to: "!room:example.org",
     messageId: "$media",
   });
-  assert.deepEqual(loadWebMediaCalls, [
-    {
-      mediaUrl: "/tmp/workspace-agent/out/render.png",
-      options: {
-        maxBytes: 20 * 1024 * 1024,
-        localRoots: ["/tmp/workspace-agent"],
-      },
-    },
-  ]);
   assert.deepEqual(fetchRemoteMediaCalls, []);
   assert.deepEqual(uploadMediaCalls, [
     {
       roomId: "!room:example.org",
       filename: "render.png",
       contentType: "image/png",
-      dataBase64: Buffer.from("local-image").toString("base64"),
+      dataBase64: TINY_PNG.toString("base64"),
       caption: undefined,
       replyToId: undefined,
       threadId: undefined,
@@ -1084,22 +1072,14 @@ test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async
 });
 
 test("sendMatrixMedia forwards workspace-aware mediaAccess for relative media paths", async () => {
-  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-workspace-"));
+  await fs.mkdir(path.join(workspaceDir, "cards", "sillytavern"), { recursive: true });
+  await fs.writeFile(path.join(workspaceDir, "cards", "sillytavern", "land-dolphin.png"), TINY_PNG);
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   const sendMessageCalls: Array<Record<string, unknown>> = [];
-  const readFile = async (_filePath: string) => Buffer.from("workspace-image");
+  const readFile = async (_filePath: string) => TINY_PNG;
 
   setMatrixRustRuntime({
-    media: {
-      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
-        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
-        return {
-          buffer: Buffer.from("workspace-image"),
-          contentType: "image/png",
-          fileName: "land-dolphin.png",
-        };
-      },
-    },
     channel: {
       media: {
         fetchRemoteMedia: async () => {
@@ -1132,9 +1112,9 @@ test("sendMatrixMedia forwards workspace-aware mediaAccess for relative media pa
     to: "!room:example.org",
     mediaUrl: "cards/sillytavern/land-dolphin.png",
     mediaAccess: {
-      localRoots: ["/tmp/workspace-agent"],
+      localRoots: [workspaceDir],
       readFile,
-      workspaceDir: "/tmp/workspace-agent",
+      workspaceDir,
     },
     text: "caption",
   });
@@ -1144,28 +1124,99 @@ test("sendMatrixMedia forwards workspace-aware mediaAccess for relative media pa
     to: "!room:example.org",
     messageId: "$media",
   });
-  assert.deepEqual(loadWebMediaCalls, [
-    {
-      mediaUrl: "cards/sillytavern/land-dolphin.png",
-      options: {
-        maxBytes: 20 * 1024 * 1024,
-        localRoots: ["/tmp/workspace-agent"],
-        readFile,
-        workspaceDir: "/tmp/workspace-agent",
-      },
-    },
-  ]);
   assert.deepEqual(uploadMediaCalls, [
     {
       roomId: "!room:example.org",
       filename: "land-dolphin.png",
       contentType: "image/png",
-      dataBase64: Buffer.from("workspace-image").toString("base64"),
+      dataBase64: TINY_PNG.toString("base64"),
       caption: undefined,
       replyToId: undefined,
       threadId: undefined,
     },
   ]);
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "caption",
+      threadId: undefined,
+    },
+  ]);
+});
+
+test("sendMatrixMedia preserves raw SillyTavern card PNG metadata", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-card-"));
+  await fs.mkdir(path.join(workspaceDir, "cards", "sillytavern"), { recursive: true });
+  const mediaPath = path.join(workspaceDir, "cards", "sillytavern", "hero.png");
+  await fs.writeFile(mediaPath, TINY_CARD_PNG);
+
+  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
+
+  setMatrixRustRuntime({
+    media: {
+      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
+        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
+        return {
+          buffer: Buffer.from("optimized-image"),
+          contentType: "image/jpeg",
+          fileName: "hero.jpg",
+        };
+      },
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+
+  const result = await sendMatrixMedia({
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$card",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+      sendMessage: (request: Record<string, unknown>) => {
+        sendMessageCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$caption",
+        };
+      },
+    } as any,
+    to: "!room:example.org",
+    mediaUrl: "cards/sillytavern/hero.png",
+    mediaAccess: {
+      localRoots: [workspaceDir],
+      workspaceDir,
+    },
+    text: "caption",
+  });
+
+  assert.deepEqual(result, {
+    channel: "matrix",
+    to: "!room:example.org",
+    messageId: "$card",
+  });
+  assert.deepEqual(loadWebMediaCalls, []);
+  assert.deepEqual(uploadMediaCalls.length, 1);
+  assert.equal(uploadMediaCalls[0]?.filename, "hero.png");
+  assert.equal(uploadMediaCalls[0]?.contentType, "image/png");
+  const uploadedBuffer = Buffer.from(String(uploadMediaCalls[0]?.dataBase64), "base64");
+  assert.deepEqual(detectSillyTavernCardFromBuffer(uploadedBuffer), {
+    detected: "sillytavern-character-card",
+    cardName: "Hero Example",
+  });
   assert.deepEqual(sendMessageCalls, [
     {
       roomId: "!room:example.org",

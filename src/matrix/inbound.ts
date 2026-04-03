@@ -15,6 +15,7 @@ import {
   resolveControlCommandGate,
   resolveDefaultGroupPolicy,
 } from "openclaw/plugin-sdk/matrix";
+import { loadWebMediaRaw } from "openclaw/plugin-sdk/web-media";
 import type {
   CoreConfig,
   MatrixAttachmentAutoDownloadScope,
@@ -83,6 +84,13 @@ type DownloadedMatrixAttachment = {
   savedTo?: string;
   detected?: string;
   cardName?: string;
+};
+
+type MatrixOutboundLocalMediaLoadOptions = {
+  maxBytes: number;
+  localRoots?: readonly string[];
+  readFile?: (filePath: string) => Promise<Buffer>;
+  workspaceDir?: string;
 };
 
 function resolveMediaMaxBytes(account: ResolvedMatrixAccount): number {
@@ -279,6 +287,25 @@ function shouldIncludeMatrixImageMediaPaths(account: ResolvedMatrixAccount): boo
 
 function shouldIncludeMatrixOtherMediaPaths(account: ResolvedMatrixAccount): boolean {
   return account.config.otherMediaPaths !== false;
+}
+
+function buildMatrixOutboundLocalMediaLoadOptions(params: {
+  maxBytes: number;
+  mediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
+  mediaLocalRoots?: readonly string[];
+}): MatrixOutboundLocalMediaLoadOptions {
+  return {
+    maxBytes: params.maxBytes,
+    ...(params.mediaAccess?.localRoots ?? params.mediaLocalRoots
+      ? { localRoots: params.mediaAccess?.localRoots ?? params.mediaLocalRoots }
+      : {}),
+    ...(params.mediaAccess?.readFile ? { readFile: params.mediaAccess.readFile } : {}),
+    ...(params.mediaAccess?.workspaceDir ? { workspaceDir: params.mediaAccess.workspaceDir } : {}),
+  };
 }
 
 function isMatrixImageKind(kind?: string): boolean {
@@ -1274,14 +1301,12 @@ async function loadOutboundMedia(params: {
     };
   }
 
-  const loaded = await runtime.media.loadWebMedia(mediaUrl, {
+  const loadOptions = buildMatrixOutboundLocalMediaLoadOptions({
     maxBytes,
-    ...(mediaAccess?.localRoots ?? mediaLocalRoots
-      ? { localRoots: mediaAccess?.localRoots ?? mediaLocalRoots }
-      : {}),
-    ...(mediaAccess?.readFile ? { readFile: mediaAccess.readFile } : {}),
-    ...(mediaAccess?.workspaceDir ? { workspaceDir: mediaAccess.workspaceDir } : {}),
+    mediaAccess,
+    mediaLocalRoots,
   });
+  const loaded = await loadWebMediaRaw(mediaUrl, loadOptions);
   return {
     buffer: Buffer.from(loaded.buffer),
     contentType: loaded.contentType,

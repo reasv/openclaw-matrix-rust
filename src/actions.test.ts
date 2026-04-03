@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { matrixRustActions, summarizeReactionsForTool } from "./actions.js";
 import { MatrixNativeClient } from "./matrix/adapter/native-client.js";
@@ -21,6 +24,11 @@ const originalUploadMedia = MatrixNativeClient.prototype.uploadMedia;
 const originalReadMessages = MatrixNativeClient.prototype.readMessages;
 const originalMessageSummary = MatrixNativeClient.prototype.messageSummary;
 const originalDownloadMedia = MatrixNativeClient.prototype.downloadMedia;
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+  "base64",
+);
+const TINY_PDF = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "utf8");
 
 function installReadyClient(params: {
   sendMessage?: (request: Record<string, unknown>) => Record<string, unknown>;
@@ -389,22 +397,14 @@ test("send action keeps text-only sends on sendMessage", async () => {
 });
 
 test("send action uploads local media with caption and trusted mediaLocalRoots", async () => {
-  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-action-send-pdf-"));
+  const mediaPath = path.join(workspaceDir, "report.pdf");
+  await fs.writeFile(mediaPath, TINY_PDF);
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   const sendMessageCalls: Array<Record<string, unknown>> = [];
   setMatrixRustRuntime({
     state: {
       resolveStateDir: () => "/tmp/openclaw-test-state",
-    },
-    media: {
-      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
-        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
-        return {
-          buffer: Buffer.from("pdf-bytes"),
-          contentType: "application/pdf",
-          fileName: "report.pdf",
-        };
-      },
     },
     channel: {
       media: {
@@ -438,12 +438,12 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
     params: {
       to: "!room:example.org",
       message: "Quarterly report",
-      media: "./out/report.pdf",
+      media: mediaPath,
       replyTo: "$parent",
       threadId: "$thread",
     },
     cfg: baseConfig,
-    mediaLocalRoots: ["/tmp/agent-root"],
+    mediaLocalRoots: [workspaceDir],
   });
 
   assert.deepEqual(result, {
@@ -452,21 +452,12 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
     roomId: "!room:example.org",
     messageId: "$file",
   });
-  assert.deepEqual(loadWebMediaCalls, [
-    {
-      mediaUrl: "./out/report.pdf",
-      options: {
-        maxBytes: 20 * 1024 * 1024,
-        localRoots: ["/tmp/agent-root"],
-      },
-    },
-  ]);
   assert.deepEqual(uploadMediaCalls, [
     {
       roomId: "!room:example.org",
       filename: "report.pdf",
       contentType: "application/pdf",
-      dataBase64: Buffer.from("pdf-bytes").toString("base64"),
+      dataBase64: TINY_PDF.toString("base64"),
       caption: undefined,
       replyToId: "$parent",
       threadId: "$thread",
@@ -482,22 +473,14 @@ test("send action uploads local media with caption and trusted mediaLocalRoots",
 });
 
 test("send action sends attachment captions as a follow-up text event", async () => {
-  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-action-send-png-"));
+  const mediaPath = path.join(workspaceDir, "render.png");
+  await fs.writeFile(mediaPath, TINY_PNG);
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   const sendMessageCalls: Array<Record<string, unknown>> = [];
   setMatrixRustRuntime({
     state: {
       resolveStateDir: () => "/tmp/openclaw-test-state",
-    },
-    media: {
-      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
-        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
-        return {
-          buffer: Buffer.from("image-bytes"),
-          contentType: "image/png",
-          fileName: "render.png",
-        };
-      },
     },
     channel: {
       media: {
@@ -531,12 +514,12 @@ test("send action sends attachment captions as a follow-up text event", async ()
     params: {
       to: "!room:example.org",
       message: "Render result",
-      media: "./out/render.png",
+      media: mediaPath,
       replyTo: "$parent",
       threadId: "$thread",
     },
     cfg: baseConfig,
-    mediaLocalRoots: ["/tmp/agent-root"],
+    mediaLocalRoots: [workspaceDir],
   });
 
   assert.deepEqual(result, {
@@ -545,21 +528,12 @@ test("send action sends attachment captions as a follow-up text event", async ()
     roomId: "!room:example.org",
     messageId: "$image",
   });
-  assert.deepEqual(loadWebMediaCalls, [
-    {
-      mediaUrl: "./out/render.png",
-      options: {
-        maxBytes: 20 * 1024 * 1024,
-        localRoots: ["/tmp/agent-root"],
-      },
-    },
-  ]);
   assert.deepEqual(uploadMediaCalls, [
     {
       roomId: "!room:example.org",
       filename: "render.png",
       contentType: "image/png",
-      dataBase64: Buffer.from("image-bytes").toString("base64"),
+      dataBase64: TINY_PNG.toString("base64"),
       caption: undefined,
       replyToId: "$parent",
       threadId: "$thread",
@@ -575,21 +549,13 @@ test("send action sends attachment captions as a follow-up text event", async ()
 });
 
 test("send action accepts attachment-only sends via filePath alias", async () => {
-  const loadWebMediaCalls: Array<{ mediaUrl: string; options: Record<string, unknown> }> = [];
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-action-send-filepath-"));
+  const mediaPath = path.join(workspaceDir, "render.png");
+  await fs.writeFile(mediaPath, TINY_PNG);
   const uploadMediaCalls: Array<Record<string, unknown>> = [];
   setMatrixRustRuntime({
     state: {
       resolveStateDir: () => "/tmp/openclaw-test-state",
-    },
-    media: {
-      loadWebMedia: async (mediaUrl: string, options?: Record<string, unknown>) => {
-        loadWebMediaCalls.push({ mediaUrl, options: options ?? {} });
-        return {
-          buffer: Buffer.from("image-bytes"),
-          contentType: "image/png",
-          fileName: "render.png",
-        };
-      },
     },
     channel: {
       media: {
@@ -615,10 +581,10 @@ test("send action accepts attachment-only sends via filePath alias", async () =>
     action: "send",
     params: {
       to: "!room:example.org",
-      filePath: "./out/render.png",
+      filePath: mediaPath,
     },
     cfg: baseConfig,
-    mediaLocalRoots: ["/tmp/agent-root"],
+    mediaLocalRoots: [workspaceDir],
   });
 
   assert.deepEqual(result, {
@@ -627,21 +593,12 @@ test("send action accepts attachment-only sends via filePath alias", async () =>
     roomId: "!room:example.org",
     messageId: "$media-only",
   });
-  assert.deepEqual(loadWebMediaCalls, [
-    {
-      mediaUrl: "./out/render.png",
-      options: {
-        maxBytes: 20 * 1024 * 1024,
-        localRoots: ["/tmp/agent-root"],
-      },
-    },
-  ]);
   assert.deepEqual(uploadMediaCalls, [
     {
       roomId: "!room:example.org",
       filename: "render.png",
       contentType: "image/png",
-      dataBase64: Buffer.from("image-bytes").toString("base64"),
+      dataBase64: TINY_PNG.toString("base64"),
       caption: undefined,
       replyToId: undefined,
       threadId: undefined,
