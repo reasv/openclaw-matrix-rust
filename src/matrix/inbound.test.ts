@@ -1014,7 +1014,7 @@ test("resolves thread starter context for a new thread session", async () => {
   });
 });
 
-test("maybeBuildMatrixUploadThumbnail skips small images and thumbnails large images to 800x400 bounds", async () => {
+test("maybeBuildMatrixUploadThumbnail skips small images and thumbnails large images to 800px max edge", async () => {
   const smallThumbnail = await maybeBuildMatrixUploadThumbnail({
     buffer: TINY_PNG,
     contentType: "image/png",
@@ -1038,7 +1038,7 @@ test("maybeBuildMatrixUploadThumbnail skips small images and thumbnails large im
   assert.equal(metadata.width, thumbnail!.width);
   assert.equal(metadata.pageHeight ?? metadata.height, thumbnail!.height);
   assert.ok(thumbnail!.width <= 800);
-  assert.ok(thumbnail!.height <= 400);
+  assert.ok(thumbnail!.height <= 800);
 });
 
 test("maybeBuildMatrixUploadThumbnail renders animated webp thumbnails for animated gifs", async () => {
@@ -1257,7 +1257,7 @@ test("sendMatrixMedia includes thumbnails for large image attachments", async ()
   assert.ok(thumbnail);
   assert.equal(thumbnail?.contentType, "image/webp");
   assert.ok(thumbnail!.width <= 800);
-  assert.ok(thumbnail!.height <= 400);
+  assert.ok(thumbnail!.height <= 800);
   const metadata = await sharp(Buffer.from(thumbnail!.dataBase64, "base64"), { animated: true }).metadata();
   assert.equal(metadata.format, "webp");
 });

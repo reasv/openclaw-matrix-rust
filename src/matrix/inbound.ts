@@ -64,8 +64,7 @@ import { resolveMatrixRoomConfig } from "./rooms.js";
 const DEFAULT_STARTUP_GRACE_MS = 5_000;
 const MATRIX_OUTBOUND_THUMBNAIL_MIN_BYTES = 800 * 1024;
 const MATRIX_OUTBOUND_THUMBNAIL_TARGET_MAX_BYTES = 256 * 1024;
-const MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE = 800;
-const MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE = 400;
+const MATRIX_OUTBOUND_THUMBNAIL_MAX_EDGE = 800;
 const MATRIX_OUTBOUND_THUMBNAIL_SCALE_CANDIDATES = [1, 0.75, 0.5] as const;
 const MATRIX_OUTBOUND_THUMBNAIL_STATIC_QUALITY_CANDIDATES = [70, 60, 50] as const;
 const MATRIX_OUTBOUND_THUMBNAIL_ANIMATED_QUALITY_CANDIDATES = [60, 50, 40] as const;
@@ -404,18 +403,11 @@ export async function maybeBuildMatrixUploadThumbnail(params: {
       ? MATRIX_OUTBOUND_THUMBNAIL_ANIMATED_QUALITY_CANDIDATES
       : MATRIX_OUTBOUND_THUMBNAIL_STATIC_QUALITY_CANDIDATES;
     const targetMaxBytes = params.targetMaxBytes ?? MATRIX_OUTBOUND_THUMBNAIL_TARGET_MAX_BYTES;
-    const isLandscape = sourceWidth >= sourceHeight;
-    const baseMaxWidth = isLandscape
-      ? MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE
-      : MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE;
-    const baseMaxHeight = isLandscape
-      ? MATRIX_OUTBOUND_THUMBNAIL_MAX_SHORT_EDGE
-      : MATRIX_OUTBOUND_THUMBNAIL_MAX_LONG_EDGE;
     let smallest: MatrixUploadMediaThumbnail | undefined;
 
     for (const scale of MATRIX_OUTBOUND_THUMBNAIL_SCALE_CANDIDATES) {
-      const maxWidth = Math.max(1, Math.round(baseMaxWidth * scale));
-      const maxHeight = Math.max(1, Math.round(baseMaxHeight * scale));
+      const maxWidth = Math.max(1, Math.round(MATRIX_OUTBOUND_THUMBNAIL_MAX_EDGE * scale));
+      const maxHeight = Math.max(1, Math.round(MATRIX_OUTBOUND_THUMBNAIL_MAX_EDGE * scale));
       for (const quality of qualityCandidates) {
         const candidate = await renderMatrixThumbnailCandidate({
           buffer: params.buffer,
