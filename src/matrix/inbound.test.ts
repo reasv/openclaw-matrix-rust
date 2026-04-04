@@ -15,6 +15,7 @@ import {
   buildMatrixInboundPresentation,
   buildMatrixPromptImages,
   detectExplicitMention,
+  deliverReplyPayload,
   extractMatrixCustomEmojiUsageFromFormattedBody,
   filterMatrixMediaForContext,
   handleMatrixInboundEvent,
@@ -1335,6 +1336,81 @@ test("sendMatrixMedia preserves raw SillyTavern card PNG metadata", async () => 
     detected: "sillytavern-character-card",
     cardName: "Hero Example",
   });
+  assert.deepEqual(sendMessageCalls, [
+    {
+      roomId: "!room:example.org",
+      text: "caption",
+      threadId: undefined,
+    },
+  ]);
+});
+
+test("deliverReplyPayload resolves relative media paths against the agent workspace", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-reply-workspace-"));
+  await fs.mkdir(path.join(workspaceDir, "cards", "sillytavern"), { recursive: true });
+  await fs.writeFile(path.join(workspaceDir, "cards", "sillytavern", "land-dolphin.png"), TINY_PNG);
+
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const sendMessageCalls: Array<Record<string, unknown>> = [];
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-matrix-rust-state",
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+
+  await deliverReplyPayload({
+    cfg: {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+        },
+      },
+    } as CoreConfig,
+    agentId: "main",
+    account: createResolvedAccount(),
+    client: {
+      uploadMedia: (request: Record<string, unknown>) => {
+        uploadMediaCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$media",
+          filename: String(request.filename),
+          contentType: String(request.contentType),
+        };
+      },
+      sendMessage: (request: Record<string, unknown>) => {
+        sendMessageCalls.push(request);
+        return {
+          roomId: "!room:example.org",
+          messageId: "$caption",
+        };
+      },
+    } as any,
+    inboundEvent: createInboundEvent(),
+    payload: {
+      text: "caption",
+      mediaUrl: "cards/sillytavern/land-dolphin.png",
+    },
+  });
+
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "land-dolphin.png",
+      contentType: "image/png",
+      dataBase64: TINY_PNG.toString("base64"),
+      caption: undefined,
+      replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
   assert.deepEqual(sendMessageCalls, [
     {
       roomId: "!room:example.org",

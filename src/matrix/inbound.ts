@@ -1664,8 +1664,28 @@ async function savePreviewMedia(params: {
   return saved;
 }
 
-async function deliverReplyPayload(params: {
+function resolveMatrixReplyMediaAccess(params: {
   cfg: CoreConfig;
+  agentId: string;
+  runtime: ReturnType<typeof getMatrixRustRuntime>;
+}): {
+  localRoots: string[];
+  workspaceDir: string;
+} {
+  const workspaceDir = resolveMatrixAgentWorkspaceDir({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    runtime: params.runtime,
+  });
+  return {
+    localRoots: [workspaceDir],
+    workspaceDir,
+  };
+}
+
+export async function deliverReplyPayload(params: {
+  cfg: CoreConfig;
+  agentId: string;
   account: ResolvedMatrixAccount;
   client: MatrixNativeClient;
   inboundEvent: MatrixInboundEvent;
@@ -1700,6 +1720,11 @@ async function deliverReplyPayload(params: {
         to: inboundEvent.roomId,
         mediaUrl,
         text: first ? text || undefined : undefined,
+        mediaAccess: resolveMatrixReplyMediaAccess({
+          cfg: params.cfg,
+          agentId: params.agentId,
+          runtime: getMatrixRustRuntime(),
+        }),
         replyToId: defaultReplyToId,
         threadId: defaultThreadId,
       });
@@ -2294,6 +2319,7 @@ export async function handleMatrixInboundEvent(params: {
     deliverNow: async (payload) => {
       await deliverReplyPayload({
         cfg,
+        agentId: route.agentId,
         account,
         client,
         inboundEvent: event,
