@@ -95,8 +95,9 @@ type DownloadedMatrixAttachment = {
 
 type MatrixOutboundLocalMediaLoadOptions = {
   maxBytes: number;
-  localRoots?: readonly string[];
+  localRoots?: readonly string[] | "any";
   readFile?: (filePath: string) => Promise<Buffer>;
+  hostReadCapability?: boolean;
   workspaceDir?: string;
 };
 
@@ -312,13 +313,22 @@ function buildMatrixOutboundLocalMediaLoadOptions(params: {
     workspaceDir?: string;
   };
   mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
 }): MatrixOutboundLocalMediaLoadOptions {
+  const readFile = params.mediaAccess?.readFile ?? params.mediaReadFile;
+  const localRoots = params.mediaAccess?.localRoots ?? params.mediaLocalRoots;
+  if (readFile) {
+    return {
+      maxBytes: params.maxBytes,
+      localRoots: "any",
+      readFile,
+      hostReadCapability: true,
+      ...(params.mediaAccess?.workspaceDir ? { workspaceDir: params.mediaAccess.workspaceDir } : {}),
+    };
+  }
   return {
     maxBytes: params.maxBytes,
-    ...(params.mediaAccess?.localRoots ?? params.mediaLocalRoots
-      ? { localRoots: params.mediaAccess?.localRoots ?? params.mediaLocalRoots }
-      : {}),
-    ...(params.mediaAccess?.readFile ? { readFile: params.mediaAccess.readFile } : {}),
+    ...(localRoots ? { localRoots } : {}),
     ...(params.mediaAccess?.workspaceDir ? { workspaceDir: params.mediaAccess.workspaceDir } : {}),
   };
 }
@@ -1412,9 +1422,10 @@ async function loadOutboundMedia(params: {
     workspaceDir?: string;
   };
   mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
   runtime: any;
 }): Promise<{ buffer: Buffer; contentType?: string; fileName?: string }> {
-  const { mediaUrl, maxBytes, mediaAccess, mediaLocalRoots, runtime } = params;
+  const { mediaUrl, maxBytes, mediaAccess, mediaLocalRoots, mediaReadFile, runtime } = params;
   if (/^https?:\/\//i.test(mediaUrl)) {
     const loaded = await runtime.channel.media.fetchRemoteMedia({
       url: mediaUrl,
@@ -1431,6 +1442,7 @@ async function loadOutboundMedia(params: {
     maxBytes,
     mediaAccess,
     mediaLocalRoots,
+    mediaReadFile,
   });
   const loaded = await loadWebMediaRaw(mediaUrl, loadOptions);
   return {
@@ -1452,6 +1464,7 @@ export async function sendMatrixMedia(params: {
     workspaceDir?: string;
   };
   mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
   replyToId?: string;
   threadId?: string;
 }): Promise<{ channel: "matrix"; to: string; messageId: string }> {
@@ -1462,6 +1475,7 @@ export async function sendMatrixMedia(params: {
     maxBytes,
     mediaAccess: params.mediaAccess,
     mediaLocalRoots: params.mediaLocalRoots,
+    mediaReadFile: params.mediaReadFile,
     runtime,
   });
   const thumbnail = await maybeBuildMatrixUploadThumbnail({

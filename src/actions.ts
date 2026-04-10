@@ -66,7 +66,9 @@ export const matrixRustActions: ChannelMessageActionAdapter = {
         to,
         mediaUrl,
         text: resolveOptionalSendMessage(ctx.params),
+        mediaAccess: ctx.mediaAccess,
         mediaLocalRoots: ctx.mediaLocalRoots,
+        mediaReadFile: ctx.mediaReadFile,
         replyToId: replyToId ?? undefined,
         threadId: threadId ?? undefined,
       });

@@ -535,6 +535,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
       text,
       mediaAccess,
       mediaLocalRoots,
+      mediaReadFile,
       replyToId,
       threadId,
       accountId,
@@ -552,6 +553,7 @@ export const matrixRustPlugin: ChannelPlugin<ResolvedMatrixAccount> = {
         text: text ?? undefined,
         mediaAccess,
         mediaLocalRoots,
+        mediaReadFile,
         replyToId: replyToId ?? undefined,
         threadId: threadId == null ? undefined : String(threadId),
       });

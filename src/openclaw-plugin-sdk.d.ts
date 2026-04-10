@@ -102,6 +102,8 @@ declare module "openclaw/plugin-sdk/matrix" {
     params: Record<string, unknown>;
     cfg: OpenClawConfig;
     mediaLocalRoots?: readonly string[];
+    mediaAccess?: OutboundMediaAccess;
+    mediaReadFile?: (filePath: string) => Promise<Buffer>;
     accountId?: string | null;
   };
 
@@ -209,6 +211,8 @@ declare module "openclaw/plugin-sdk/matrix" {
         to: string;
         text: string;
         mediaLocalRoots?: readonly string[];
+        mediaAccess?: OutboundMediaAccess;
+        mediaReadFile?: (filePath: string) => Promise<Buffer>;
         replyToId?: string | null;
         threadId?: string | number | null;
         accountId?: string | null;
@@ -220,6 +224,7 @@ declare module "openclaw/plugin-sdk/matrix" {
         text?: string | null;
         mediaAccess?: OutboundMediaAccess;
         mediaLocalRoots?: readonly string[];
+        mediaReadFile?: (filePath: string) => Promise<Buffer>;
         replyToId?: string | null;
         threadId?: string | number | null;
         accountId?: string | null;

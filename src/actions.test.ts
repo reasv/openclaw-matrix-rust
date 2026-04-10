@@ -605,3 +605,67 @@ test("send action accepts attachment-only sends via filePath alias", async () =>
     },
   ]);
 });
+
+test("send action forwards workspace-aware mediaAccess for relative filePath", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-action-media-access-"));
+  const uploadMediaCalls: Array<Record<string, unknown>> = [];
+  const readFileCalls: string[] = [];
+  setMatrixRustRuntime({
+    state: {
+      resolveStateDir: () => "/tmp/openclaw-test-state",
+    },
+    channel: {
+      media: {
+        fetchRemoteMedia: async () => {
+          throw new Error("unexpected fetchRemoteMedia");
+        },
+      },
+    },
+  } as any);
+  installReadyClient({
+    uploadMedia: (request) => {
+      uploadMediaCalls.push(request);
+      return {
+        roomId: String(request.roomId),
+        messageId: "$workspace-media",
+        filename: String(request.filename),
+        contentType: String(request.contentType),
+      };
+    },
+  });
+
+  const result = await matrixRustActions.handleAction!({
+    action: "send",
+    params: {
+      to: "!room:example.org",
+      filePath: "./generated/image_0.png",
+    },
+    cfg: baseConfig,
+    mediaAccess: {
+      readFile: async (filePath: string) => {
+        readFileCalls.push(filePath);
+        return TINY_PNG;
+      },
+      workspaceDir,
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    channel: "matrix",
+    roomId: "!room:example.org",
+    messageId: "$workspace-media",
+  });
+  assert.deepEqual(readFileCalls, [path.join(workspaceDir, "generated", "image_0.png")]);
+  assert.deepEqual(uploadMediaCalls, [
+    {
+      roomId: "!room:example.org",
+      filename: "image_0.png",
+      contentType: "image/png",
+      dataBase64: TINY_PNG.toString("base64"),
+      caption: undefined,
+      replyToId: undefined,
+      threadId: undefined,
+    },
+  ]);
+});
