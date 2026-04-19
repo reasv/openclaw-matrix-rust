@@ -68,6 +68,12 @@ const MATRIX_OUTBOUND_THUMBNAIL_MAX_EDGE = 800;
 const MATRIX_OUTBOUND_THUMBNAIL_SCALE_CANDIDATES = [1, 0.75, 0.5] as const;
 const MATRIX_OUTBOUND_THUMBNAIL_STATIC_QUALITY_CANDIDATES = [70, 60, 50] as const;
 const MATRIX_OUTBOUND_THUMBNAIL_ANIMATED_QUALITY_CANDIDATES = [60, 50, 40] as const;
+const MATRIX_PROMPT_IMAGE_MAX_BYTES = Math.floor(1.1 * 1024 * 1024);
+const MATRIX_PROMPT_IMAGE_TARGET_MAX_BYTES = 1024 * 1024;
+const MATRIX_PROMPT_IMAGE_MAX_PIXELS = 1280 * 720;
+const MATRIX_PROMPT_IMAGE_SCALE_CANDIDATES = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.5, 0.4] as const;
+const MATRIX_PROMPT_IMAGE_STATIC_QUALITY_CANDIDATES = [85, 75, 65, 55, 45] as const;
+const MATRIX_PROMPT_IMAGE_ANIMATED_QUALITY_CANDIDATES = [70, 60, 50, 40] as const;
 
 type PromptImageContent = {
   type: "image";
@@ -452,19 +458,118 @@ function isMatrixImageMime(contentType?: string): boolean {
   return contentType?.trim().toLowerCase().startsWith("image/") ?? false;
 }
 
-function buildPromptImageFromBase64(params: {
+async function renderMatrixPromptImageCandidate(params: {
+  buffer: Buffer;
+  animated: boolean;
+  maxWidth: number;
+  maxHeight: number;
+  quality: number;
+}): Promise<(PromptImageContent & { sizeBytes: number }) | null> {
+  const pipeline = sharp(params.buffer, { animated: params.animated }).rotate().resize({
+    width: params.maxWidth,
+    height: params.maxHeight,
+    fit: "inside",
+    withoutEnlargement: true,
+  });
+  const outputBuffer = await pipeline.webp({
+    quality: params.quality,
+    alphaQuality: params.quality,
+    effort: 4,
+    ...(params.animated ? { loop: 0 } : {}),
+  }).toBuffer();
+  return {
+    type: "image",
+    data: outputBuffer.toString("base64"),
+    mimeType: "image/webp",
+    sizeBytes: outputBuffer.length,
+  };
+}
+
+export async function buildPromptImageFromBase64(params: {
   dataBase64: string;
   contentType?: string;
   kind?: string;
-}): PromptImageContent | undefined {
+}): Promise<PromptImageContent | undefined> {
   if (!isMatrixImageKind(params.kind) && !isMatrixImageMime(params.contentType)) {
     return undefined;
   }
-  return {
-    type: "image",
-    data: params.dataBase64,
-    mimeType: params.contentType?.trim() || "image/jpeg",
-  };
+  const mimeType = params.contentType?.trim() || "image/jpeg";
+  const buffer = Buffer.from(params.dataBase64, "base64");
+  if (buffer.length <= MATRIX_PROMPT_IMAGE_MAX_BYTES) {
+    return {
+      type: "image",
+      data: params.dataBase64,
+      mimeType,
+    };
+  }
+
+  try {
+    const sourceMetadata = await sharp(buffer, { animated: true }).metadata();
+    if (!sourceMetadata.format) {
+      return undefined;
+    }
+    const sourceWidth = sanitizePositiveInteger(sourceMetadata.width);
+    const sourceHeight = sanitizePositiveInteger(sourceMetadata.pageHeight ?? sourceMetadata.height);
+    if (!sourceWidth || !sourceHeight) {
+      return undefined;
+    }
+    const sourcePixels = sourceWidth * sourceHeight;
+    const baselineScale =
+      sourcePixels > MATRIX_PROMPT_IMAGE_MAX_PIXELS
+        ? Math.sqrt(MATRIX_PROMPT_IMAGE_MAX_PIXELS / sourcePixels)
+        : 1;
+    if (buffer.length <= MATRIX_PROMPT_IMAGE_MAX_BYTES && baselineScale >= 0.999) {
+      return {
+        type: "image",
+        data: params.dataBase64,
+        mimeType,
+      };
+    }
+    const animated = (sourceMetadata.pages ?? 1) > 1;
+    const qualityCandidates = animated
+      ? MATRIX_PROMPT_IMAGE_ANIMATED_QUALITY_CANDIDATES
+      : MATRIX_PROMPT_IMAGE_STATIC_QUALITY_CANDIDATES;
+    let smallest: (PromptImageContent & { sizeBytes: number }) | undefined;
+
+    for (const scale of MATRIX_PROMPT_IMAGE_SCALE_CANDIDATES) {
+      const finalScale = Math.min(1, baselineScale * scale);
+      const maxWidth = Math.max(1, Math.round(sourceWidth * finalScale));
+      const maxHeight = Math.max(1, Math.round(sourceHeight * finalScale));
+      for (const quality of qualityCandidates) {
+        const candidate = await renderMatrixPromptImageCandidate({
+          buffer,
+          animated,
+          maxWidth,
+          maxHeight,
+          quality,
+        });
+        if (!candidate) {
+          continue;
+        }
+        if (!smallest || candidate.sizeBytes < smallest.sizeBytes) {
+          smallest = candidate;
+        }
+        if (candidate.sizeBytes <= MATRIX_PROMPT_IMAGE_TARGET_MAX_BYTES) {
+          return {
+            type: candidate.type,
+            data: candidate.data,
+            mimeType: candidate.mimeType,
+          };
+        }
+      }
+    }
+
+    if (smallest && smallest.sizeBytes <= MATRIX_PROMPT_IMAGE_MAX_BYTES) {
+      return {
+        type: smallest.type,
+        data: smallest.data,
+        mimeType: smallest.mimeType,
+      };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function filterMatrixMediaForContext(params: {
@@ -1543,7 +1648,7 @@ async function saveInboundMedia(params: {
       filename: downloaded.filename ?? item.filename,
       kind: item.kind,
       contentType: persisted.contentType ?? downloaded.contentType ?? item.contentType,
-      promptImage: buildPromptImageFromBase64({
+      promptImage: await buildPromptImageFromBase64({
         dataBase64: downloaded.dataBase64,
         contentType: downloaded.contentType ?? item.contentType,
         kind: item.kind,
@@ -1668,7 +1773,7 @@ async function savePreviewMedia(params: {
       filename: item.filename,
       kind: item.kind,
       contentType: persisted.contentType ?? item.contentType,
-      promptImage: buildPromptImageFromBase64({
+      promptImage: await buildPromptImageFromBase64({
         dataBase64: item.dataBase64,
         contentType: item.contentType,
         kind: item.kind,

@@ -14,6 +14,7 @@ import {
 import {
   buildMatrixInboundPresentation,
   buildMatrixPromptImages,
+  buildPromptImageFromBase64,
   detectExplicitMention,
   deliverReplyPayload,
   extractMatrixCustomEmojiUsageFromFormattedBody,
@@ -1055,6 +1056,25 @@ test("maybeBuildMatrixUploadThumbnail renders animated webp thumbnails for anima
   const metadata = await sharp(Buffer.from(thumbnail!.dataBase64, "base64"), { animated: true }).metadata();
   assert.equal(metadata.format, "webp");
   assert.ok((metadata.pages ?? 1) > 1);
+});
+
+test("buildPromptImageFromBase64 shrinks oversized inbound prompt images below the local byte and pixel caps", async () => {
+  const largePng = await createLargeNoisePng({ width: 2400, height: 2400 });
+  assert.ok(largePng.length > Math.floor(1.1 * 1024 * 1024));
+
+  const promptImage = await buildPromptImageFromBase64({
+    dataBase64: largePng.toString("base64"),
+    contentType: "image/png",
+    kind: "image",
+  });
+
+  assert.ok(promptImage);
+  assert.equal(promptImage?.type, "image");
+  assert.equal(promptImage?.mimeType, "image/webp");
+  const promptBuffer = Buffer.from(promptImage!.data, "base64");
+  assert.ok(promptBuffer.length <= Math.floor(1.1 * 1024 * 1024));
+  const metadata = await sharp(promptBuffer).metadata();
+  assert.ok((metadata.width ?? 0) * (metadata.height ?? 0) <= 1280 * 720);
 });
 
 test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async () => {
