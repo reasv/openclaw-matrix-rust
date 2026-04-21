@@ -458,6 +458,22 @@ function isMatrixImageMime(contentType?: string): boolean {
   return contentType?.trim().toLowerCase().startsWith("image/") ?? false;
 }
 
+function resolveSharpImageMimeType(format?: string): string | undefined {
+  switch (format) {
+    case "jpeg":
+    case "jpg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    default:
+      return undefined;
+  }
+}
+
 async function renderMatrixPromptImageCandidate(params: {
   buffer: Buffer;
   animated: boolean;
@@ -493,21 +509,16 @@ export async function buildPromptImageFromBase64(params: {
   if (!isMatrixImageKind(params.kind) && !isMatrixImageMime(params.contentType)) {
     return undefined;
   }
-  const mimeType = params.contentType?.trim() || "image/jpeg";
   const buffer = Buffer.from(params.dataBase64, "base64");
-  if (buffer.length <= MATRIX_PROMPT_IMAGE_MAX_BYTES) {
-    return {
-      type: "image",
-      data: params.dataBase64,
-      mimeType,
-    };
-  }
 
   try {
     const sourceMetadata = await sharp(buffer, { animated: true }).metadata();
     if (!sourceMetadata.format) {
       return undefined;
     }
+    const detectedMimeType = resolveSharpImageMimeType(sourceMetadata.format);
+    const declaredMimeType = params.contentType?.trim();
+    const mimeType = detectedMimeType ?? declaredMimeType ?? "image/jpeg";
     const sourceWidth = sanitizePositiveInteger(sourceMetadata.width);
     const sourceHeight = sanitizePositiveInteger(sourceMetadata.pageHeight ?? sourceMetadata.height);
     if (!sourceWidth || !sourceHeight) {

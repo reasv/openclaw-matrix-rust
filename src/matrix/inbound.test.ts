@@ -1077,6 +1077,27 @@ test("buildPromptImageFromBase64 shrinks oversized inbound prompt images below t
   assert.ok((metadata.width ?? 0) * (metadata.height ?? 0) <= 1280 * 720);
 });
 
+test("buildPromptImageFromBase64 corrects mismatched inbound image MIME types", async () => {
+  const jpeg = await sharp({
+    create: {
+      width: 32,
+      height: 24,
+      channels: 3,
+      background: { r: 10, g: 20, b: 30 },
+    },
+  }).jpeg().toBuffer();
+
+  const promptImage = await buildPromptImageFromBase64({
+    dataBase64: jpeg.toString("base64"),
+    contentType: "image/png",
+    kind: "image",
+  });
+
+  assert.ok(promptImage);
+  assert.equal(promptImage?.data, jpeg.toString("base64"));
+  assert.equal(promptImage?.mimeType, "image/jpeg");
+});
+
 test("sendMatrixMedia forwards mediaLocalRoots for local workspace files", async () => {
   const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-send-local-"));
   const mediaPath = path.join(workspaceDir, "render.png");
@@ -2127,7 +2148,7 @@ test("batched room context falls back to the last earlier media-bearing message 
             kind: "image",
             filename: "earlier.png",
             contentType: "image/png",
-            dataBase64: Buffer.from("earlier-image").toString("base64"),
+            dataBase64: TINY_PNG.toString("base64"),
           };
         },
       } as any,
